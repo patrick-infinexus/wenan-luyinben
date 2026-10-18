@@ -188,6 +188,11 @@ input[type="file"] { display: none; }
 .heard.live { color: var(--dai); }
 textarea[readonly] { color: var(--dai); }
 
+.field { font-family: var(--font-ui); font-size: 14px; color: var(--ink); background: transparent; border: 1px solid var(--rule); border-radius: 6px; padding: 6px 10px; min-width: 0; }
+.field:focus { outline: 2px solid var(--dai); outline-offset: 1px; border-color: transparent; }
+#author { max-width: 320px; }
+textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6px; padding: 8px 10px; }
+
 .backup { display: flex; flex-direction: column; gap: 10px; font-size: 13px; color: var(--ink-soft); }
 .backup .row button { font-size: 13px; }
 .compose.dropping, .entry.dropping { outline: 2px dashed var(--dai); outline-offset: 4px; background: var(--dai-wash); }
@@ -215,6 +220,7 @@ textarea[readonly] { color: var(--dai); }
 
   <section class="compose" id="compose" aria-label="新收一条">
     <label class="lbl" for="new-text">新收一条</label>
+    <input type="text" class="field" id="author" maxlength="40" placeholder="你的名字（选填，会显示在这条下面）" autocomplete="nickname">
     <textarea id="new-text" placeholder="把一句话写在这里"></textarea>
     <div class="row" id="new-voice-row"></div>
     <div class="row">
@@ -235,12 +241,18 @@ textarea[readonly] { color: var(--dai); }
   <section class="list" id="list" aria-label="已收的文案"></section>
   <div class="state" id="state" hidden></div>
 
-  <section class="backup" aria-label="备份">
-    <div>文案和录音都存在这个浏览器里，别的手机或电脑看不到。换设备或清理浏览器之前，先导出一份备份。</div>
+  <section class="backup" aria-label="备份和管理">
+    <div>这个本子存在云端，拿到链接的人都能看到、播放和添加。“导出备份”会把所有文案和录音打包成一个文件下载下来。</div>
     <div class="row">
       <button type="button" id="export">导出备份</button>
-      <button type="button" id="import">导入备份</button>
+      <button type="button" id="import" hidden>导入备份</button>
+      <button type="button" id="admin-toggle">管理</button>
     </div>
+    <form class="row" id="admin-form" hidden>
+      <input type="password" class="field" id="admin-key" placeholder="管理口令" autocomplete="current-password" aria-label="管理口令">
+      <button type="submit">进入管理</button>
+    </form>
+    <div class="row" id="admin-state" hidden>已进入管理模式，可以编辑、重录和删除。<button type="button" id="admin-exit">退出管理</button></div>
     <input type="file" id="file-import" accept=".json,application/json">
   </section>
   <input type="file" id="file-entry" accept="audio/*,.m4a,.mp3,.aac,.wav,.webm">
@@ -251,35 +263,35 @@ textarea[readonly] { color: var(--dai); }
 <script>
 (function () {
   const $ = (id) => document.getElementById(id);
-  const MAX_BYTES = 50 * 1024 * 1024;
+  const MAX_BYTES = 15 * 1024 * 1024;
 
-  // ---- storage: IndexedDB keeps text and audio blobs in this browser ----
-  let idb = null;
-  function openDb() {
-    return new Promise((resolve, reject) => {
-      const req = indexedDB.open("wenan-luyinben", 1);
-      req.onupgradeneeded = () => req.result.createObjectStore("lines", { keyPath: "id" });
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error);
-    });
+  // ---- cloud storage: server/worker.js keeps the shared notebook in a private GitHub repo ----
+  const API = (window.WENAN_API || "WORKER_URL").replace(/\/+$/, "");
+  const audioUrl = (voice) => API + "/api/audio/" + voice.file;
+  let adminKey = "";
+  try { adminKey = localStorage.getItem("admin-key") || ""; } catch (_) {}
+  let isAdmin = false;
+  async function api(path, opts = {}) {
+    const headers = {};
+    if (opts.body !== undefined) headers["Content-Type"] = "application/json";
+    if (adminKey && opts.admin !== false) headers["X-Admin-Key"] = adminKey;
+    let res;
+    try {
+      res = await fetch(API + path, { method: opts.method || "GET", headers, body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined });
+    } catch (_) {
+      throw new Error("连不上服务器，检查一下网络再试。");
+    }
+    let data = null;
+    try { data = await res.json(); } catch (_) {}
+    if (!res.ok) throw new Error((data && data.error) || "服务器出错了（" + res.status + "）");
+    return data;
   }
-  function tx(mode, fn) {
-    return new Promise((resolve, reject) => {
-      const t = idb.transaction("lines", mode);
-      const store = t.objectStore("lines");
-      let out;
-      Promise.resolve(fn(store)).then((v) => { out = v; });
-      t.oncomplete = () => resolve(out);
-      t.onerror = () => reject(t.error);
-      t.onabort = () => reject(t.error);
-    });
-  }
-  const getAll = () => tx("readonly", (s) => new Promise((res) => { const r = s.getAll(); r.onsuccess = () => res(r.result); }));
-  const put = (line) => tx("readwrite", (s) => { s.put(line); });
-  const del = (id) => tx("readwrite", (s) => { s.delete(id); });
 
   let entries = [];
   let ready = false;
+  let loadError = null;
+  let editing = null;              // id of the line being edited
+  let editDraft = "";
   let pendingNew = null;           // {blob, type, dur}
   let pickTarget = null;
   let confirming = null;
@@ -332,7 +344,7 @@ textarea[readonly] { color: var(--dai); }
   async function fromFile(file) {
     const type = audioMime(file);
     if (!type) throw new Error("这个文件不像录音。请选 m4a、mp3 这类音频文件。");
-    if (file.size > MAX_BYTES) throw new Error("录音超过 50MB，太大了。可以分成几段。");
+    if (file.size > MAX_BYTES) throw new Error("录音超过 15MB，太大了。可以分成几段。");
     return { blob: file, type, dur: await measure(file) };
   }
 
@@ -508,13 +520,12 @@ textarea[readonly] { color: var(--dai); }
   }
   async function transcribeEntry(id) {
     const e = entries.find((x) => x.id === id);
-    if (!e || !e.voice || busyText[id]) return;
+    if (!e || !e.voice || busyText[id] || !isAdmin) return;
     busyText[id] = "正在转文字…";
     render();
     try {
-      const text = await transcribe(e.voice.blob);
-      const cur = entries.find((x) => x.id === id);
-      if (cur && cur.voice) await put(Object.assign({}, cur, { voice: Object.assign({}, cur.voice, { text: text || "" }) }));
+      const text = await transcribe(await voiceBlob(e.voice));
+      await api("/api/lines/" + id, { method: "PATCH", body: { voiceText: text || "" } });
       toast(text ? "已转成文字" : "这段录音里没听出文字");
     } catch (err) {
       setStatus(null);
@@ -739,7 +750,9 @@ textarea[readonly] { color: var(--dai); }
       return;
     }
     if (player) player.audio.pause();
-    const a = new Audio(urlFor(key, voice.blob));
+    const a = new Audio();
+    a.crossOrigin = "anonymous";
+    a.src = voice.blob ? urlFor(key, voice.blob) : audioUrl(voice);
     player = { key, audio: a };
     a.addEventListener("play", render);
     a.addEventListener("pause", render);
@@ -750,13 +763,19 @@ textarea[readonly] { color: var(--dai); }
     });
     a.play().catch(() => { toast("这段录音在这个浏览器里放不了"); player = null; render(); });
   }
+  async function voiceBlob(voice) {
+    if (voice.blob) return voice.blob;
+    const res = await fetch(audioUrl(voice));
+    if (!res.ok) throw new Error("录音取不下来（" + res.status + "）");
+    return res.blob();
+  }
 
   // ---- render ----
   function render() {
     const withVoice = entries.filter((e) => e.voice).length;
     $("tally").textContent = !ready ? "正在打开…" : entries.length
       ? "已收 " + entries.length + " 条 · 其中 " + withVoice + " 条有录音"
-      : "还没有收任何一条";
+      : loadError ? "" : "还没有收任何一条";
 
     // compose recorder + pending voice
     const recNew = $("rec-new");
@@ -791,7 +810,15 @@ textarea[readonly] { color: var(--dai); }
     if (!ready) return;
     if (!entries.length) {
       state.hidden = false;
-      state.textContent = "这里还是空的。在上面写下第一句，点“收下这条”。";
+      state.innerHTML = "";
+      state.textContent = loadError ? "打不开本子：" + loadError + " " : "这里还是空的。在上面写下第一句，点“收下这条”。";
+      if (loadError) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.textContent = "再试一次";
+        b.addEventListener("click", () => reload());
+        state.appendChild(b);
+      }
       return;
     }
     state.hidden = true;
@@ -812,13 +839,32 @@ textarea[readonly] { color: var(--dai); }
 
     const body = document.createElement("div");
     body.className = "body";
-    const q = document.createElement("p");
-    q.className = "quote";
-    q.textContent = e.text || "";
+    if (editing === e.id) {
+      const ta = document.createElement("textarea");
+      ta.id = "edit-" + e.id;
+      ta.className = "edit";
+      ta.value = editDraft;
+      ta.addEventListener("input", () => { editDraft = ta.value; });
+      const r = document.createElement("div");
+      r.className = "row";
+      const save = document.createElement("button");
+      save.type = "button"; save.className = "primary"; save.textContent = "保存修改";
+      save.addEventListener("click", () => saveEdit(e));
+      const cancel = document.createElement("button");
+      cancel.type = "button"; cancel.textContent = "取消";
+      cancel.addEventListener("click", () => { editing = null; render(); });
+      r.append(save, cancel);
+      body.append(ta, r);
+    } else {
+      const q = document.createElement("p");
+      q.className = "quote";
+      q.textContent = e.text || "";
+      body.appendChild(q);
+    }
     const meta = document.createElement("div");
     meta.className = "meta";
-    meta.textContent = fmtDate(e.createdAt);
-    body.append(q, meta);
+    meta.textContent = fmtDate(e.createdAt) + (e.author ? " · " + e.author : "");
+    body.appendChild(meta);
 
     const recording = rec && rec.target === e.id;
     if (e.voice && !recording) body.appendChild(voiceEl(e.id, e.voice));
@@ -836,32 +882,35 @@ textarea[readonly] { color: var(--dai); }
 
     const acts = document.createElement("div");
     acts.className = "actions";
-    const recB = recButton(e.id);
-    if (!(rec && rec.target === e.id)) recB.querySelector(".label").textContent = e.voice ? "重录" : "录音";
-    acts.appendChild(recB);
     const add = (label, fn) => {
       const b = document.createElement("button");
       b.type = "button";
       b.textContent = label;
+      b.disabled = !!busyText[e.id];
       b.addEventListener("click", fn);
       acts.appendChild(b);
     };
     add("复制", () => copyText(e.text || ""));
-    add("选文件", () => { pickTarget = e.id; $("file-entry").value = ""; $("file-entry").click(); });
-    if (e.voice && !e.voice.text && !busyText[e.id]) add("转文字", () => transcribeEntry(e.id));
-    if (e.voice) {
-      add("下载录音", () => downloadBlob(e.voice.blob, pad(e.no) + "." + extFor(e.voice.type)));
-      add("删除录音", () => { confirming = { id: e.id, kind: "audio" }; render(); });
+    if (e.voice) add("下载录音", () => downloadVoice(e));
+    if (isAdmin) {
+      if (editing !== e.id) add("编辑", () => { editing = e.id; editDraft = e.text || ""; render(); const t = $("edit-" + e.id); if (t) t.focus(); });
+      const recB = recButton(e.id);
+      if (!recording) recB.querySelector(".label").textContent = e.voice ? "重录" : "录音";
+      if (busyText[e.id]) recB.disabled = true;
+      acts.appendChild(recB);
+      add("选文件", () => { pickTarget = e.id; $("file-entry").value = ""; $("file-entry").click(); });
+      if (e.voice && !e.voice.text && !busyText[e.id]) add("转文字", () => transcribeEntry(e.id));
+      if (e.voice) add("删除录音", () => { confirming = { id: e.id, kind: "audio" }; render(); });
+      add("删除这条", () => { confirming = { id: e.id, kind: "entry" }; render(); });
     }
-    add("删除这条", () => { confirming = { id: e.id, kind: "entry" }; render(); });
     body.appendChild(acts);
 
-    if (confirming && confirming.id === e.id) {
+    if (isAdmin && confirming && confirming.id === e.id) {
       const c = document.createElement("div");
       c.className = "confirm";
       const msg = document.createElement("span");
       msg.textContent = confirming.kind === "entry"
-        ? "删除第 " + pad(e.no || 0) + " 条" + (e.voice ? "和它的录音" : "") + "？删了找不回来。"
+        ? "删除第 " + pad(e.no || 0) + " 条" + (e.voice ? "和它的录音" : "") + "？所有人都会看不到，删了找不回来。"
         : "删除这段录音？文字会留着，录音找不回来。";
       const yes = document.createElement("button");
       yes.type = "button"; yes.className = "danger"; yes.textContent = "确定删除";
@@ -889,90 +938,200 @@ textarea[readonly] { color: var(--dai); }
     a.click();
     setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
   }
+  async function downloadVoice(e) {
+    try { downloadBlob(await voiceBlob(e.voice), pad(e.no) + "." + extFor(e.voice.type)); }
+    catch (err) { toast(err.message); }
+  }
 
   // ---- writes ----
   async function reload() {
-    entries = await getAll();
+    try {
+      const data = await api("/api/lines", { admin: false });
+      entries = data.lines || [];
+      loadError = null;
+    } catch (e) {
+      loadError = e.message;
+    }
     ready = true;
     render();
+  }
+  async function voicePayload(voice) {
+    return { type: voice.type, dur: voice.dur, text: voice.text || "", data: await blobToB64(voice.blob) };
   }
   async function saveNew() {
     const text = $("new-text").value.trim();
     if (!text) { toast("先写一句话再收下"); $("new-text").focus(); return; }
     if (rec && rec.target === "new") { toast("先点“停止”结束录音"); return; }
-    const no = entries.reduce((m, e) => Math.max(m, e.no || 0), 0) + 1;
+    const btn = $("save-new");
+    btn.disabled = true;
+    btn.textContent = pendingNew ? "正在上传录音…" : "正在保存…";
     try {
-      await put({ id: newId(), no, text, voice: pendingNew, createdAt: Date.now() });
-    } catch (e) { toast("没存上：浏览器的存储空间可能满了。"); return; }
-    $("new-text").value = "";
-    dropUrl("new");
-    pendingNew = null;
-    toast("已收下第 " + pad(no) + " 条");
-    await reload();
+      const body = { text, author: $("author").value.trim(), voice: pendingNew ? await voicePayload(pendingNew) : null };
+      const { line } = await api("/api/lines", { method: "POST", body, admin: false });
+      $("new-text").value = "";
+      dropUrl("new");
+      pendingNew = null;
+      setStatus(null);
+      toast("已收下第 " + pad(line.no) + " 条");
+      await reload();
+    } catch (e) {
+      toast("没存上：" + e.message);
+    }
+    btn.disabled = false;
+    btn.textContent = "收下这条";
   }
   async function setVoice(id, voice) {
     confirming = null;
-    const e = entries.find((x) => x.id === id);
-    if (!e) return;
+    if (!entries.find((x) => x.id === id)) return;
     dropUrl(id);
-    try { await put(Object.assign({}, e, { voice })); }
-    catch (_) { toast("没存上：浏览器的存储空间可能满了。"); }
-    if (!voice) toast("录音已删除");
+    busyText[id] = voice ? "正在上传录音…" : "正在删除录音…";
+    render();
+    try {
+      await api("/api/lines/" + id, { method: "PATCH", body: { voice: voice ? await voicePayload(voice) : null } });
+      toast(voice ? "录音已存好" : "录音已删除");
+    } catch (e) { toast("没改成：" + e.message); }
+    delete busyText[id];
+    await reload();
+  }
+  async function saveEdit(e) {
+    const text = editDraft.trim();
+    if (!text) { toast("文案不能是空的"); return; }
+    busyText[e.id] = "正在保存修改…";
+    render();
+    try {
+      await api("/api/lines/" + e.id, { method: "PATCH", body: { text } });
+      editing = null;
+      toast("第 " + pad(e.no || 0) + " 条已修改");
+    } catch (err) { toast("没改成：" + err.message); }
+    delete busyText[e.id];
     await reload();
   }
   async function removeEntry(e) {
     confirming = null;
     dropUrl(e.id);
-    await del(e.id);
-    toast("第 " + pad(e.no || 0) + " 条已删除");
+    busyText[e.id] = "正在删除…";
+    render();
+    try {
+      await api("/api/lines/" + e.id, { method: "DELETE" });
+      toast("第 " + pad(e.no || 0) + " 条已删除");
+    } catch (err) { toast("没删掉：" + err.message); }
+    delete busyText[e.id];
     await reload();
   }
 
   // ---- backup ----
   function blobToB64(blob) {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const r = new FileReader();
       r.onload = () => resolve(String(r.result).split(",")[1] || "");
+      r.onerror = () => reject(r.error);
       r.readAsDataURL(blob);
     });
   }
   async function exportAll() {
-    const out = [];
-    for (const e of entries) {
-      const row = { id: e.id, no: e.no, text: e.text, createdAt: e.createdAt, voice: null };
-      if (e.voice) row.voice = { type: e.voice.type, dur: e.voice.dur, text: e.voice.text || "", data: await blobToB64(e.voice.blob) };
-      out.push(row);
+    const btn = $("export");
+    btn.disabled = true;
+    try {
+      await reload();
+      const out = [];
+      let i = 0;
+      for (const e of entries) {
+        btn.textContent = "正在打包 " + (++i) + "/" + entries.length;
+        const row = { id: e.id, no: e.no, text: e.text, author: e.author || "", createdAt: e.createdAt, voice: null };
+        if (e.voice) row.voice = { type: e.voice.type, dur: e.voice.dur, text: e.voice.text || "", data: await blobToB64(await voiceBlob(e.voice)) };
+        out.push(row);
+      }
+      const json = JSON.stringify({ app: "wenan-luyinben", version: 1, exportedAt: Date.now(), lines: out });
+      const d = new Date();
+      downloadBlob(new Blob([json], { type: "application/json" }), "文案录音本备份-" + d.getFullYear() + String(d.getMonth() + 1).padStart(2, "0") + String(d.getDate()).padStart(2, "0") + ".json");
+    } catch (e) {
+      toast("备份没做成：" + e.message);
     }
-    const json = JSON.stringify({ app: "wenan-luyinben", version: 1, exportedAt: Date.now(), lines: out });
-    const d = new Date();
-    downloadBlob(new Blob([json], { type: "application/json" }), "文案录音本备份-" + d.getFullYear() + String(d.getMonth() + 1).padStart(2, "0") + String(d.getDate()).padStart(2, "0") + ".json");
+    btn.disabled = false;
+    btn.textContent = "导出备份";
   }
   async function importFile(file) {
     let data;
     try { data = JSON.parse(await file.text()); } catch (_) { toast("这个文件不是文案录音本的备份。"); return; }
     if (!data || !Array.isArray(data.lines)) { toast("这个文件不是文案录音本的备份。"); return; }
-    let added = 0;
+    const btn = $("import");
+    btn.disabled = true;
+    await reload();
     const have = new Set(entries.map((e) => e.id));
-    for (const r of data.lines) {
-      if (!r || !r.id || have.has(r.id)) continue;
-      let voice = null;
-      if (r.voice && r.voice.data) {
-        const bin = atob(r.voice.data);
-        const bytes = new Uint8Array(bin.length);
-        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-        voice = { blob: new Blob([bytes], { type: r.voice.type }), type: r.voice.type, dur: r.voice.dur, text: r.voice.text || "" };
+    const todo = data.lines.filter((r) => r && r.id && r.text && !have.has(r.id)).sort((a, b) => (a.no || 0) - (b.no || 0));
+    let added = 0;
+    for (const r of todo) {
+      btn.textContent = "正在导入 " + (added + 1) + "/" + todo.length;
+      try {
+        await api("/api/lines", { method: "POST", body: {
+          id: r.id, no: r.no, text: r.text, author: r.author || "", createdAt: r.createdAt,
+          voice: r.voice && r.voice.data ? { type: r.voice.type, dur: r.voice.dur, text: r.voice.text || "", data: r.voice.data } : null,
+        } });
+        added++;
+      } catch (e) {
+        toast("第 " + pad(r.no || 0) + " 条没导入：" + e.message);
+        break;
       }
-      await put({ id: r.id, no: r.no, text: r.text, createdAt: r.createdAt, voice });
-      added++;
     }
-    toast(added ? "导入了 " + added + " 条" : "备份里的文案这里都有了");
+    btn.disabled = false;
+    btn.textContent = "导入备份";
+    toast(added ? "导入了 " + added + " 条" : todo.length ? "没有导入成功" : "备份里的文案这里都有了");
     await reload();
   }
+
+  // ---- owner mode ----
+  function renderAdmin() {
+    $("admin-state").hidden = !isAdmin;
+    $("admin-toggle").hidden = isAdmin;
+    $("import").hidden = !isAdmin;
+    if (isAdmin) $("admin-form").hidden = true;
+  }
+  async function checkAdmin(announce) {
+    if (!adminKey) { isAdmin = false; renderAdmin(); render(); return; }
+    try {
+      await api("/api/admin");
+      isAdmin = true;
+      if (announce) toast("已进入管理模式");
+    } catch (e) {
+      isAdmin = false;
+      if (/口令/.test(e.message)) {
+        adminKey = "";
+        try { localStorage.removeItem("admin-key"); } catch (_) {}
+      }
+      if (announce) toast(e.message);
+    }
+    renderAdmin();
+    render();
+  }
+  $("admin-toggle").addEventListener("click", () => {
+    const f = $("admin-form");
+    f.hidden = !f.hidden;
+    if (!f.hidden) $("admin-key").focus();
+  });
+  $("admin-form").addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    adminKey = $("admin-key").value.trim();
+    $("admin-key").value = "";
+    try { localStorage.setItem("admin-key", adminKey); } catch (_) {}
+    checkAdmin(true);
+  });
+  $("admin-exit").addEventListener("click", () => {
+    adminKey = "";
+    isAdmin = false;
+    editing = null;
+    confirming = null;
+    try { localStorage.removeItem("admin-key"); } catch (_) {}
+    renderAdmin();
+    render();
+    toast("已退出管理模式");
+  });
 
   // ---- wiring ----
   $("save-new").addEventListener("click", saveNew);
   $("rec-new").addEventListener("click", () => (rec && rec.target === "new") ? stopRec() : startRec("new"));
   $("pick-new").addEventListener("click", () => { $("file-new").value = ""; $("file-new").click(); });
+  try { $("author").value = localStorage.getItem("author") || ""; } catch (_) {}
+  $("author").addEventListener("change", () => { try { localStorage.setItem("author", $("author").value.trim()); } catch (_) {} });
   async function acceptNew(f) {
     if (!f) return;
     try { pendingNew = await fromFile(f); newBase = null; dropUrl("new"); render(); toast("已附上：" + f.name); }
@@ -980,9 +1139,10 @@ textarea[readonly] { color: var(--dai); }
     if (liveOn()) offerNew();
   }
   async function attachTo(id, f) {
-    if (!f) return;
-    try { await setVoice(id, await fromFile(f)); toast("录音已存好"); }
-    catch (e) { toast(e.message); return; }
+    if (!f || !isAdmin) return;
+    let voice;
+    try { voice = await fromFile(f); } catch (e) { toast(e.message); return; }
+    await setVoice(id, voice);
     if (liveOn() && modelOk) transcribeEntry(id);
   }
   $("file-new").addEventListener("change", (ev) => acceptNew(ev.target.files && ev.target.files[0]));
@@ -1007,7 +1167,7 @@ textarea[readonly] { color: var(--dai); }
   const clearDrop = () => list.querySelectorAll(".entry.dropping").forEach((x) => x.classList.remove("dropping"));
   list.addEventListener("dragover", (ev) => {
     const card = ev.target.closest && ev.target.closest(".entry");
-    if (!card || !hasFiles(ev)) return;
+    if (!isAdmin || !card || !hasFiles(ev)) return;
     ev.preventDefault();
     if (!card.classList.contains("dropping")) { clearDrop(); card.classList.add("dropping"); }
   });
@@ -1015,27 +1175,20 @@ textarea[readonly] { color: var(--dai); }
   list.addEventListener("drop", (ev) => {
     const card = ev.target.closest && ev.target.closest(".entry");
     clearDrop();
-    if (!card || !hasFiles(ev)) return;
+    if (!isAdmin || !card || !hasFiles(ev)) return;
     ev.preventDefault();
     attachTo(card.dataset.id, ev.dataTransfer.files[0]);
   });
 
+  // Others add lines too: refresh when the page comes back into view, and every minute while it is open.
+  const quiet = () => !rec && !editing && !confirming && !Object.keys(busyText).length;
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && quiet()) reload(); });
+  setInterval(() => { if (document.visibilityState === "visible" && quiet()) reload(); }, 60000);
+
   render();
-  (async () => {
-    try {
-      listMics();
-      listMics();
-      idb = await openDb();
-      if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
-      await reload();
-    } catch (_) {
-      ready = true;
-      $("compose").hidden = true;
-      $("state").hidden = false;
-      $("state").textContent = "这个浏览器不能保存数据（可能开了无痕模式）。请用普通窗口打开。";
-      render();
-    }
-  })();
+  listMics();
+  reload();
+  checkAdmin(false);
 })();
 </script>
 </body>
