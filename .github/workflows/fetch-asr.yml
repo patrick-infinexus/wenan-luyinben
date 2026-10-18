@@ -1,0 +1,76 @@
+# Downloads the official sherpa-onnx web build of SenseVoice (k2-fsa/sherpa-onnx releases)
+# and stores it under asr/ so the page can serve it from GitHub Pages.
+# The model package is split into parts because GitHub rejects files over 100 MB.
+name: Fetch SenseVoice runtime
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [".github/workflows/fetch-asr.yml"]
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download the SenseVoice web build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/asr && cd /tmp/asr
+          found=""
+          for tag in $(gh release list --repo k2-fsa/sherpa-onnx --limit 20 --json tagName --jq '.[].tagName'); do
+            names=$(gh release view "$tag" --repo k2-fsa/sherpa-onnx --json assets --jq '.assets[].name')
+            name=$(echo "$names" | grep -E '^sherpa-onnx-wasm-simd-.*vad-asr.*sense.?voice.*\.tar\.bz2$' | grep -E 'zh_en' | head -1 || true)
+            if [ -n "$name" ]; then
+              gh release download "$tag" --repo k2-fsa/sherpa-onnx --pattern "$name"
+              found="$name"
+              echo "tag=$tag asset=$name"
+              break
+            fi
+          done
+          if [ -z "$found" ]; then
+            echo "No SenseVoice web build found. Web assets in the latest release:"
+            gh release view --repo k2-fsa/sherpa-onnx --json assets --jq '.assets[].name' | grep -i wasm | head -80
+            exit 1
+          fi
+          tar xjf "$found"
+          echo "$found" > /tmp/asr/asset-name
+
+      - name: Place the runtime under asr/
+        run: |
+          set -euo pipefail
+          data=$(find /tmp/asr -name 'sherpa-onnx-wasm-main-vad-asr.data' | head -1)
+          d=$(dirname "$data")
+          ls -la "$d"
+          out="$GITHUB_WORKSPACE/asr"
+          rm -rf "$out" && mkdir -p "$out"
+          cp "$d/sherpa-onnx-wasm-main-vad-asr.js" "$d/sherpa-onnx-wasm-main-vad-asr.wasm" "$d/sherpa-onnx-asr.js" "$out/"
+          [ -f "$d/sherpa-onnx-vad.js" ] && cp "$d/sherpa-onnx-vad.js" "$out/"
+          [ -f "$d/app-vad-asr.js" ] && cp "$d/app-vad-asr.js" "$out/reference-app-vad-asr.js"
+          split -b 40m -d -a 2 "$data" "$out/data.part"
+          size=$(stat -c %s "$data")
+          parts=$(cd "$out" && ls data.part* | python3 -c "import sys, json; print(json.dumps([l.strip() for l in sys.stdin]))")
+          printf '{"asset": "%s", "size": %s, "parts": %s}\n' "$(cat /tmp/asr/asset-name)" "$size" "$parts" > "$out/manifest.json"
+          cat "$out/manifest.json"
+          echo "--- model files referenced by the official demo:"
+          grep -n -E "onnx|tokens|senseVoice|sense_voice" "$d/app-vad-asr.js" | head -40 || true
+          echo "--- package loader hooks:"
+          grep -o -E "getPreloadedPackage|REMOTE_PACKAGE_SIZE" "$d/sherpa-onnx-wasm-main-vad-asr.js" | sort | uniq -c || true
+          grep -o -E '"filename":"[^"]*"' "$d/sherpa-onnx-wasm-main-vad-asr.js" | head -20 || true
+          touch "$GITHUB_WORKSPACE/.nojekyll"
+
+      - name: Commit the runtime
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add asr .nojekyll
+          git commit -m "更新 SenseVoice 转写运行文件" || { echo "Nothing changed"; exit 0; }
+          git push
