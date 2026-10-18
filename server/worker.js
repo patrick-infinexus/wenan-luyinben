@@ -14,6 +14,9 @@ const BRANCH = "main";
 const MAX_AUDIO_BYTES = 15 * 1024 * 1024;
 const MAX_TEXT = 5000;
 const MAX_AUTHOR = 40;
+const DEFAULT_CATEGORIES = ["文案", "工作", "生活复盘", "读书笔记", "其他"];
+const MAX_CATEGORIES = 20;
+const MAX_CATEGORY = 12;
 const AUDIO_TYPES = {
   m4a: "audio/mp4", webm: "audio/webm", ogg: "audio/ogg", mp3: "audio/mpeg",
   wav: "audio/wav", aac: "audio/aac", caf: "audio/x-caf",
@@ -48,7 +51,7 @@ function corsHeaders(request, env) {
   const allowed = (env.ALLOWED_ORIGIN || "").split(",").map((s) => s.trim()).filter(Boolean);
   return {
     "Access-Control-Allow-Origin": !allowed.length ? "*" : allowed.includes(origin) ? origin : allowed[0],
-    "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, X-Admin-Key, Range",
     "Access-Control-Expose-Headers": "Content-Range, Content-Length, Accept-Ranges",
     "Access-Control-Max-Age": "86400",
@@ -64,7 +67,7 @@ async function route(request, env, ctx) {
   const m = request.method;
 
   if (parts[1] === "lines" && parts.length === 2) {
-    if (m === "GET") return json({ lines: await listLines(env) });
+    if (m === "GET") return json(await listAll(env));
     if (m === "POST") return json({ line: await createLine(env, await body(request), isAdmin(request, env)) }, 201);
   }
   if (parts[1] === "lines" && parts.length === 3) {
@@ -76,6 +79,10 @@ async function route(request, env, ctx) {
   if (parts[1] === "audio" && parts.length === 3 && m === "GET") return audio(request, env, ctx, parts[2]);
   if (parts[1] === "transcribe" && parts.length === 2 && m === "POST") return json(await transcribe(env, await body(request)));
   if (parts[1] === "admin" && parts.length === 2 && m === "GET") { requireAdmin(request, env); return json({ ok: true }); }
+  if (parts[1] === "categories" && parts.length === 2 && m === "PUT") {
+    requireAdmin(request, env);
+    return json({ categories: await saveCategories(env, await body(request)) });
+  }
   throw new HttpError(404, "没有这个地址。");
 }
 
@@ -121,26 +128,51 @@ async function ghFail(res, what) {
 }
 const repoPath = (env, path) => "/repos/" + env.DATA_REPO + "/contents/" + path;
 
-async function listLines(env) {
+async function listAll(env) {
   const [owner, name] = env.DATA_REPO.split("/");
   const res = await gh(env, "/graphql", {
     method: "POST",
     body: JSON.stringify({
-      query: "query($owner:String!,$name:String!,$expr:String!){repository(owner:$owner,name:$name){object(expression:$expr){... on Tree{entries{name object{... on Blob{text}}}}}}}",
-      variables: { owner, name, expr: BRANCH + ":lines" },
+      query: "query($owner:String!,$name:String!,$expr:String!,$cfg:String!){repository(owner:$owner,name:$name){object(expression:$expr){... on Tree{entries{name object{... on Blob{text}}}}} config:object(expression:$cfg){... on Blob{text}}}}",
+      variables: { owner, name, expr: BRANCH + ":lines", cfg: BRANCH + ":config/categories.json" },
     }),
   });
   if (!res.ok) await ghFail(res, "list");
   const data = await res.json();
   if (data.errors && !data.data?.repository) throw new HttpError(502, "读取数据仓库失败，请检查 DATA_REPO 和密钥权限。");
+  let categories = DEFAULT_CATEGORIES;
+  try {
+    const parsed = JSON.parse(data.data?.repository?.config?.text || "null");
+    if (parsed && Array.isArray(parsed.categories) && parsed.categories.length) categories = parsed.categories;
+  } catch (_) {}
   const tree = data.data?.repository?.object;
-  if (!tree || !tree.entries) return [];
   const lines = [];
-  for (const e of tree.entries) {
+  for (const e of (tree && tree.entries) || []) {
     if (!e.name.endsWith(".json") || !e.object || typeof e.object.text !== "string") continue;
     try { lines.push(JSON.parse(e.object.text)); } catch (_) {}
   }
-  return lines.sort((a, b) => (a.no || 0) - (b.no || 0));
+  return { lines: lines.sort((a, b) => (a.no || 0) - (b.no || 0)), categories };
+}
+async function listLines(env) {
+  return (await listAll(env)).lines;
+}
+
+async function saveCategories(env, input) {
+  const seen = new Set();
+  const categories = [];
+  for (const raw of Array.isArray(input.categories) ? input.categories : []) {
+    const c = typeof raw === "string" ? raw.trim() : "";
+    if (!c || seen.has(c)) continue;
+    if (c.length > MAX_CATEGORY) throw new HttpError(400, "分类名“" + c + "”太长了（最多 " + MAX_CATEGORY + " 个字）。");
+    seen.add(c);
+    categories.push(c);
+  }
+  if (!categories.length) throw new HttpError(400, "至少要留一个分类。");
+  if (categories.length > MAX_CATEGORIES) throw new HttpError(400, "分类太多了（最多 " + MAX_CATEGORIES + " 个）。");
+  const path = "config/categories.json";
+  const sha = await shaOf(env, path);
+  await putFile(env, path, b64FromUtf8(JSON.stringify({ categories }, null, 2) + "\n"), "更新分类：" + categories.join("、"), sha || undefined);
+  return categories;
 }
 
 async function readJson(env, path) {
@@ -213,6 +245,8 @@ async function createLine(env, input, admin) {
   const text = cleanText(input.text, MAX_TEXT, "文案");
   if (!text) throw new HttpError(400, "先写一句话再收下。");
   const author = cleanText(input.author, MAX_AUTHOR, "名字");
+  if (!author && !admin) throw new HttpError(400, "请先填上你的名字。");
+  const category = cleanText(input.category, MAX_CATEGORY, "分类") || DEFAULT_CATEGORIES[0];
   // Only the owner may carry over ids, numbers and dates, when importing a backup.
   const id = admin && typeof input.id === "string" && /^[a-z0-9]{6,40}$/.test(input.id) ? input.id : randomId();
   const existing = await listLines(env);
@@ -222,7 +256,7 @@ async function createLine(env, input, admin) {
     : existing.reduce((mx, l) => Math.max(mx, l.no || 0), 0) + 1;
   const createdAt = admin && Number.isFinite(input.createdAt) ? input.createdAt : Date.now();
   const voice = input.voice ? await storeAudio(env, id, input.voice, no) : null;
-  const line = { id, no, text, author, createdAt, voice };
+  const line = { id, no, text, author, category, createdAt, voice };
   await putFile(env, "lines/" + id + ".json", b64FromUtf8(JSON.stringify(line, null, 2) + "\n"),
     "新增第 " + pad(no) + " 条" + (author ? "（" + author + "）" : ""));
   return line;
@@ -237,6 +271,7 @@ async function updateLine(env, id, input) {
     line.text = cleanText(input.text, MAX_TEXT, "文案");
     if (!line.text) throw new HttpError(400, "文案不能是空的。");
   }
+  if (typeof input.category === "string") line.category = cleanText(input.category, MAX_CATEGORY, "分类") || DEFAULT_CATEGORIES[0];
   if ("voice" in input) line.voice = input.voice ? await storeAudio(env, id, input.voice, line.no) : null;
   if (typeof input.voiceText === "string" && line.voice) line.voice.text = cleanText(input.voiceText, MAX_TEXT, "录音文字");
   await putFile(env, "lines/" + id + ".json", b64FromUtf8(JSON.stringify(line, null, 2) + "\n"), "修改第 " + pad(line.no) + " 条", cur.sha);

@@ -1,0 +1,16 @@
+# Deployed by .github/workflows/deploy-server.yml on every push that touches server/.
+# GITHUB_TOKEN and ADMIN_KEY are secrets set in the Cloudflare dashboard; deploys keep them.
+name = "wenan-luyinben"
+main = "worker.js"
+compatibility_date = "2026-09-01"
+workers_dev = true
+
+[vars]
+DATA_REPO = "patrick-infinexus/wenan-luyinben-data"
+ALLOWED_ORIGIN = "https://patrick-infinexus.github.io"
+
+[ai]
+binding = "AI"
+
+[observability]
+enabled = true
