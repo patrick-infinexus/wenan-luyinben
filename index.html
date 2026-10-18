@@ -4,10 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>文案录音本</title>
+<!-- The Chinese speech model runs on several threads, which browsers allow only on
+     cross-origin isolated pages; GitHub Pages cannot send those headers, so this service worker adds them. -->
+<script>window.coi = { coepCredentialless: () => false, quiet: true };</script>
+<script src="coi-serviceworker.js"></script>
 <meta name="theme-color" content="#eef0ec">
-<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.googleapis.com" crossorigin>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@500;700&family=Noto+Sans+SC:wght@400;500&display=swap">
+<link rel="stylesheet" crossorigin="anonymous" href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@500;700&family=Noto+Sans+SC:wght@400;500&display=swap">
 <style>
 /* Layout: one narrow reading column, like a pocket notebook; each line is a page entry with its seal number and its voice. */
 :root {
@@ -113,6 +117,10 @@ input[type="file"] { display: none; }
 .rec.on { background: var(--zhu); color: var(--sheet); }
 .rec.on .dot { background: var(--sheet); border-radius: 2px; }
 .rec .clock { font-family: var(--font-num); font-variant-numeric: tabular-nums; }
+.rec .lvl { width: 48px; height: 6px; border-radius: 3px; background: rgba(255,255,255,0.35); overflow: hidden; display: inline-block; }
+.rec .lvl i { display: block; height: 100%; width: 0; background: var(--sheet); transition: width 80ms linear; }
+.mic { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink-soft); min-width: 0; max-width: 100%; }
+.mic select { font-family: var(--font-ui); font-size: 13px; color: var(--ink); background: var(--sheet); border: 1px solid var(--rule); border-radius: 6px; padding: 4px 6px; min-width: 0; max-width: 100%; }
 @media (prefers-reduced-motion: no-preference) {
   .rec.on .dot { animation: blink 1s steps(2, start) infinite; }
   @keyframes blink { to { opacity: 0.3; } }
@@ -211,6 +219,7 @@ textarea[readonly] { color: var(--dai); }
     <div class="row" id="new-voice-row"></div>
     <div class="row">
       <label class="switch" for="live-toggle"><input type="checkbox" id="live-toggle" checked> 边说边转文字</label>
+      <label class="mic" for="mic" id="mic-wrap" hidden>麦克风 <select id="mic"></select></label>
     </div>
     <div class="row">
       <button type="button" class="rec" id="rec-new"><span class="dot"></span><span class="label">录音</span></button>
@@ -238,7 +247,7 @@ textarea[readonly] { color: var(--dai); }
 </div>
 <div class="toast" id="toast" hidden></div>
 
-<script src="https://cdn.jsdelivr.net/npm/opencc-js@1.0.5/dist/umd/t2cn.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/opencc-js@1.0.5/dist/umd/t2cn.js" crossorigin="anonymous"></script>
 <script>
 (function () {
   const $ = (id) => document.getElementById(id);
@@ -329,7 +338,7 @@ textarea[readonly] { color: var(--dai); }
 
   // ---- transcription ----
   // Live: the browser's own speech recognition while recording.
-  // Fallback: Whisper running locally in whisper-worker.js; the model is downloaded once.
+  // Accurate pass: SenseVoice running locally in asr-worker.js; the model is downloaded once.
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   const toSimplified = (() => {
     try { return window.OpenCC ? OpenCC.Converter({ from: "tw", to: "cn" }) : (s) => s; } catch (_) { return (s) => s; }
@@ -337,8 +346,9 @@ textarea[readonly] { color: var(--dai); }
   let live = null;
   let liveText = "";
   const busyText = {};
-  let whisperOk = false;
-  try { whisperOk = localStorage.getItem("whisper-ready") === "1"; } catch (_) {}
+  let modelOk = false;
+  try { modelOk = localStorage.getItem("sensevoice-ready") === "1"; } catch (_) {}
+  let newBase = null;              // text that was in the box before live transcription started
   try { if (localStorage.getItem("live-on") === "0") $("live-toggle").checked = false; } catch (_) {}
   $("live-toggle").addEventListener("change", () => {
     try { localStorage.setItem("live-on", $("live-toggle").checked ? "1" : "0"); } catch (_) {}
@@ -425,14 +435,14 @@ textarea[readonly] { color: var(--dai); }
 
   let worker = null;
   const jobs = {};
-  function whisperWorker() {
+  function asrWorker() {
     if (worker) return worker;
-    worker = new Worker("whisper-worker.js", { type: "module" });
+    worker = new Worker("asr-worker.js");
     worker.onmessage = (ev) => {
       const m = ev.data;
-      if (m.type === "loading") setStatus("正在准备转写模型…");
-      else if (m.type === "progress") setStatus("正在下载转写模型 " + (m.total ? Math.round((m.loaded / m.total) * 100) : 0) + "%（只需下载这一次，约 80MB）");
-      else if (m.type === "ready") { whisperOk = true; try { localStorage.setItem("whisper-ready", "1"); } catch (_) {} }
+      if (m.type === "loading") setStatus("正在启动中文识别模型…");
+      else if (m.type === "progress") setStatus("正在下载转写模型 " + (m.total ? Math.round((m.loaded / m.total) * 100) : 0) + "%（只需下载这一次，约 240MB）");
+      else if (m.type === "ready") { modelOk = true; try { localStorage.setItem("sensevoice-ready", "1"); } catch (_) {} }
       else if (m.type === "working") setStatus("正在把录音转成文字…");
       else if (m.type === "done" || m.type === "error") {
         const j = jobs[m.id];
@@ -467,12 +477,13 @@ textarea[readonly] { color: var(--dai); }
     const id = newId();
     return new Promise((resolve, reject) => {
       jobs[id] = { resolve, reject };
-      try { whisperWorker().postMessage({ id, audio }, [audio.buffer]); }
+      try { asrWorker().postMessage({ id, audio }, [audio.buffer]); }
       catch (e) { delete jobs[id]; reject(e); }
     });
   }
   function friendly(e) {
     const m = String(e && e.message || e);
+    if (m === "NOT_ISOLATED") return "页面需要刷新一次才能用中文识别。刷新后再点“转文字”。";
     if (/fetch|network|load|import|404|Failed/i.test(m)) return "下载转写模型时连不上网，换个网络再试。";
     return m;
   }
@@ -484,9 +495,11 @@ textarea[readonly] { color: var(--dai); }
       const text = await transcribe(voice.blob);
       setStatus(null);
       if (!text) { setStatus("这段录音里没听出文字。", true); return; }
-      voice.text = text;
       const ta = $("new-text");
-      ta.value = (ta.value.trim() ? ta.value.trim() + "\n" : "") + text;
+      // Replace what live recognition typed with the more accurate result; otherwise append.
+      if (voice.text && newBase !== null) ta.value = newBase + text;
+      else ta.value = (ta.value.trim() ? ta.value.trim() + "\n" : "") + text;
+      voice.text = text;
       render();
       toast("已转成文字，填进框里了");
     } catch (e) {
@@ -511,8 +524,8 @@ textarea[readonly] { color: var(--dai); }
     await reload();
   }
   function offerNew() {
-    if (whisperOk) { transcribeNew(); return; }
-    setStatus("这段录音还没转成文字。可以用本地模型转（第一次要下载约 80MB，之后不用网也能转）。", true, { label: "转文字", fn: transcribeNew });
+    if (modelOk) { transcribeNew(); return; }
+    setStatus("这段录音还没转成文字。可以用中文识别模型转（第一次要下载约 240MB，之后不用网也能转）。", true, { label: "转文字", fn: transcribeNew });
   }
 
   // ---- recording ----
@@ -539,8 +552,9 @@ textarea[readonly] { color: var(--dai); }
     }
     let stream;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+      stream = await getMic();
     } catch (e) { toast(micErrorText(e)); return; }
+    listMics();
     if (player) player.audio.pause();
     const mr = type ? new MediaRecorder(stream, { mimeType: type }) : new MediaRecorder(stream);
     const chunks = [];
@@ -549,10 +563,12 @@ textarea[readonly] { color: var(--dai); }
     mr.addEventListener("stop", () => finishRec());
     mr.start(1000);
     rec.timer = setInterval(updateRecClock, 250);
+    rec.meter = startMeter(stream);
 
     if (target === "new") {
       const ta = $("new-text");
       const base = ta.value.trim() ? ta.value.trim() + "\n" : "";
+      newBase = base;
       setStatus(null);
       if (liveOn() && SR) { ta.readOnly = true; setStatus("正在听，说完点“停止”。"); }
       else if (liveOn()) setStatus("这个浏览器不能边说边转文字（Chrome、Edge、Safari 可以）。录完可以用本地模型转。", true);
@@ -579,26 +595,89 @@ textarea[readonly] { color: var(--dai); }
     rec = null;
     clearInterval(r.timer);
     r.stream.getTracks().forEach((t) => t.stop());
+    const peak = r.meter ? r.meter.stop() : 1;
     if (live) await stopLive();
     $("new-text").readOnly = false;
     const type = (r.mr.mimeType || r.chunks[0] && r.chunks[0].type || "audio/webm").split(";")[0];
     const blob = new Blob(r.chunks, { type });
     const dur = (Date.now() - r.started) / 1000;
     if (!blob.size || dur < 0.5) { setStatus(null); toast("录得太短了，再录一次。"); render(); return; }
+    if (peak < 0.01) {
+      setStatus("刚才这段录音没有声音，麦克风没收到声音。先在上面的“麦克风”里换一个试试；还不行就看 Windows 设置里的麦克风权限和输入设备。", true);
+      $("mic-wrap").hidden = false;
+      render();
+      return;
+    }
     const voice = { blob, type, dur, text: (r.liveResult && r.liveResult.text) || "" };
     const needText = liveOn() && !voice.text && dur >= 1;
     if (r.target === "new") {
       pendingNew = voice;
       dropUrl("new");
       render();
-      if (needText) offerNew();
+      if (liveOn() && modelOk) transcribeNew();
+      else if (needText) offerNew();
       else { setStatus(null); toast("录好了，" + fmtTime(dur) + "。点“收下这条”存起来。"); }
     } else {
       await setVoice(r.target, voice);
-      if (needText && whisperOk) transcribeEntry(r.target);
+      if (liveOn() && modelOk) transcribeEntry(r.target);
       else toast(needText ? "录音已存好。点这条下面的“转文字”可以把它变成文字。" : "录音已存好");
     }
   }
+  // ---- microphone choice and input level ----
+  function savedMic() { try { return localStorage.getItem("mic-id") || ""; } catch (_) { return ""; } }
+  async function getMic() {
+    const base = { echoCancellation: true, noiseSuppression: true };
+    const id = savedMic();
+    if (id) {
+      try { return await navigator.mediaDevices.getUserMedia({ audio: Object.assign({ deviceId: { exact: id } }, base) }); }
+      catch (e) { if (e && e.name !== "OverconstrainedError" && e.name !== "NotFoundError") throw e; }
+    }
+    return navigator.mediaDevices.getUserMedia({ audio: base });
+  }
+  async function listMics() {
+    let devices = [];
+    try { devices = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "audioinput"); } catch (_) { return; }
+    if (!devices.length || !devices[0].label) return;
+    const sel = $("mic");
+    const cur = savedMic();
+    sel.innerHTML = "";
+    for (const d of devices) {
+      const o = document.createElement("option");
+      o.value = d.deviceId === "default" ? "" : d.deviceId;
+      o.textContent = d.label || "麦克风";
+      sel.appendChild(o);
+    }
+    sel.value = devices.some((d) => d.deviceId === cur) ? cur : "";
+    $("mic-wrap").hidden = devices.length < 2;
+  }
+  $("mic").addEventListener("change", () => {
+    try { localStorage.setItem("mic-id", $("mic").value); } catch (_) {}
+    toast("下次录音会用这个麦克风");
+  });
+  function startMeter(stream) {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return null;
+    let ac, raf = 0, peak = 0;
+    try {
+      ac = new AC();
+      const an = ac.createAnalyser();
+      an.fftSize = 1024;
+      ac.createMediaStreamSource(stream).connect(an);
+      const buf = new Float32Array(an.fftSize);
+      const tick = () => {
+        an.getFloatTimeDomainData(buf);
+        let sum = 0;
+        for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+        const rms = Math.sqrt(sum / buf.length);
+        if (rms > peak) peak = rms;
+        document.querySelectorAll(".rec.on .lvl i").forEach((el) => { el.style.width = Math.min(100, rms * 600) + "%"; });
+        raf = requestAnimationFrame(tick);
+      };
+      tick();
+    } catch (_) { return null; }
+    return { stop() { cancelAnimationFrame(raf); try { ac.close(); } catch (_) {} return peak; } };
+  }
+
   function updateRecClock() {
     if (!rec) return;
     const el = document.querySelector(".rec.on .clock");
@@ -613,7 +692,7 @@ textarea[readonly] { color: var(--dai); }
     b.type = "button";
     b.className = "rec" + (on ? " on" : "");
     b.disabled = !!rec && !on;
-    b.innerHTML = '<span class="dot"></span><span class="label"></span>' + (on ? ' <span class="clock">0:00</span>' : "");
+    b.innerHTML = '<span class="dot"></span><span class="label"></span>' + (on ? ' <span class="lvl" aria-hidden="true"><i></i></span> <span class="clock">0:00</span>' : "");
     b.querySelector(".label").textContent = on ? "停止" : "录音";
     b.addEventListener("click", () => on ? stopRec() : startRec(target));
     return b;
@@ -684,7 +763,7 @@ textarea[readonly] { color: var(--dai); }
     const onNew = rec && rec.target === "new";
     recNew.className = "rec" + (onNew ? " on" : "");
     recNew.disabled = !!rec && !onNew;
-    recNew.innerHTML = '<span class="dot"></span><span class="label">' + (onNew ? "停止" : pendingNew ? "重录" : "录音") + '</span>' + (onNew ? ' <span class="clock">0:00</span>' : "");
+    recNew.innerHTML = '<span class="dot"></span><span class="label">' + (onNew ? "停止" : pendingNew ? "重录" : "录音") + '</span>' + (onNew ? ' <span class="lvl" aria-hidden="true"><i></i></span> <span class="clock">0:00</span>' : "");
     const row = $("new-voice-row");
     row.innerHTML = "";
     if (pendingNew && !onNew) {
@@ -896,7 +975,7 @@ textarea[readonly] { color: var(--dai); }
   $("pick-new").addEventListener("click", () => { $("file-new").value = ""; $("file-new").click(); });
   async function acceptNew(f) {
     if (!f) return;
-    try { pendingNew = await fromFile(f); dropUrl("new"); render(); toast("已附上：" + f.name); }
+    try { pendingNew = await fromFile(f); newBase = null; dropUrl("new"); render(); toast("已附上：" + f.name); }
     catch (e) { toast(e.message); return; }
     if (liveOn()) offerNew();
   }
@@ -904,7 +983,7 @@ textarea[readonly] { color: var(--dai); }
     if (!f) return;
     try { await setVoice(id, await fromFile(f)); toast("录音已存好"); }
     catch (e) { toast(e.message); return; }
-    if (liveOn() && whisperOk) transcribeEntry(id);
+    if (liveOn() && modelOk) transcribeEntry(id);
   }
   $("file-new").addEventListener("change", (ev) => acceptNew(ev.target.files && ev.target.files[0]));
   $("file-entry").addEventListener("change", (ev) => {
@@ -944,6 +1023,8 @@ textarea[readonly] { color: var(--dai); }
   render();
   (async () => {
     try {
+      listMics();
+      listMics();
       idb = await openDb();
       if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
       await reload();
