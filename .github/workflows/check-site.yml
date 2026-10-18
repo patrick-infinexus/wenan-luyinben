@@ -1,0 +1,101 @@
+# Checks the live site and server from GitHub's side and reports the result as annotations
+# on the run, so problems are visible without opening the site. Runs after every deploy
+# and on demand. Reports counts and settings only, never the notebook's contents.
+name: Check site
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["Deploy server", "pages build and deployment"]
+    types: [completed]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      HAS_CF: ${{ secrets.CLOUDFLARE_API_TOKEN != '' && secrets.CLOUDFLARE_ACCOUNT_ID != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: List the server's secrets
+        id: secrets
+        if: env.HAS_CF == 'true'
+        continue-on-error: true
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: "4.147.0"
+          workingDirectory: server
+          command: secret list
+
+      - name: Check the site and the server
+        env:
+          SECRETS_OUT: ${{ steps.secrets.outputs.command-output }}
+          SITE: https://patrick-infinexus.github.io/wenan-luyinben/
+          API: https://wenan-luyinben.patrick-f78.workers.dev
+        run: |
+          python3 - <<'EOF'
+          import base64, json, os, re, struct, urllib.error, urllib.request
+
+          SITE, API = os.environ["SITE"], os.environ["API"]
+          ORIGIN = "https://patrick-infinexus.github.io"
+          problems = 0
+
+          def note(level, title, msg):
+              global problems
+              if level == "error":
+                  problems += 1
+              print(f"::{level} title={title}::{msg}")
+
+          def call(url, data=None):
+              req = urllib.request.Request(url, data=data, headers={"Origin": ORIGIN, "Content-Type": "application/json", "User-Agent": "site-check"})
+              try:
+                  with urllib.request.urlopen(req, timeout=60) as r:
+                      return r.status, r.read()
+              except urllib.error.HTTPError as e:
+                  return e.code, e.read()
+              except Exception as e:
+                  return 0, str(e).encode()
+
+          status, body = call(SITE)
+          page = body.decode("utf-8", "replace")
+          if status == 200:
+              version = "分类版" if "filter-cats" in page else "旧版"
+              note("notice", "网站", f"网站能打开（{version}网页）")
+          else:
+              note("error", "网站", f"网站打不开：HTTP {status}")
+
+          status, body = call(API + "/api/lines")
+          try:
+              data = json.loads(body)
+          except Exception:
+              data = {}
+          if status == 200 and "lines" in data:
+              lines = data["lines"]
+              voiced = sum(1 for l in lines if l.get("voice"))
+              note("notice", "服务器", f"服务器正常：{len(lines)} 条，其中 {voiced} 条有录音；分类：{'、'.join(data.get('categories') or [])}")
+          else:
+              note("error", "服务器", f"服务器出错（HTTP {status}）：{data.get('error') or body[:200].decode('utf-8', 'replace')}")
+
+          # One second of silence through speech recognition.
+          n = 16000
+          wav = b"RIFF" + struct.pack("<I", 36 + 2 * n) + b"WAVEfmt " + struct.pack("<IHHIIHH", 16, 1, 1, 16000, 32000, 2, 16) + b"data" + struct.pack("<I", 2 * n) + b"\0" * (2 * n)
+          status, body = call(API + "/api/transcribe", json.dumps({"audio": base64.b64encode(wav).decode()}).encode())
+          if status == 200:
+              note("notice", "语音识别", "语音识别可以用")
+          elif status == 501:
+              note("warning", "语音识别", "服务器没开语音识别（Workers AI 绑定 AI 缺失）")
+          else:
+              note("error", "语音识别", f"语音识别出错（HTTP {status}）：{body[:200].decode('utf-8', 'replace')}")
+
+          out = os.environ.get("SECRETS_OUT", "")
+          if out:
+              names = sorted(set(re.findall(r'"name":\s*"([A-Z_]+)"', out)))
+              note("notice", "服务器密钥", "Cloudflare 里已设置的 Secret：" + ("、".join(names) or "（没有）"))
+              for need in ("GITHUB_TOKEN", "ADMIN_KEY"):
+                  if need not in names:
+                      note("error", "服务器密钥", f"缺少 Secret：{need}")
+
+          raise SystemExit(1 if problems else 0)
+          EOF

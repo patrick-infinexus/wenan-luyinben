@@ -1,9 +1,11 @@
 # Deployed by .github/workflows/deploy-server.yml on every push that touches server/.
-# GITHUB_TOKEN and ADMIN_KEY are secrets set in the Cloudflare dashboard; deploys keep them.
+# GITHUB_TOKEN and ADMIN_KEY must be set in the Cloudflare dashboard with type "Secret".
 name = "wenan-luyinben"
 main = "worker.js"
 compatibility_date = "2026-09-01"
 workers_dev = true
+# Keep variables added in the Cloudflare dashboard; a deploy would otherwise remove them.
+keep_vars = true
 
 [vars]
 DATA_REPO = "patrick-infinexus/wenan-luyinben-data"
