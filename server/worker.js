@@ -7,6 +7,8 @@
 //   ADMIN_KEY       secret. The owner's passphrase; it unlocks editing and deleting.
 //   DATA_REPO       text, e.g. "patrick-infinexus/wenan-luyinben-data".
 //   ALLOWED_ORIGIN  text, e.g. "https://patrick-infinexus.github.io". Leave unset to allow any site.
+// Bindings (Settings → Bindings):
+//   AI              Workers AI. Turns recordings into text, so phones need no model of their own.
 
 const BRANCH = "main";
 const MAX_AUDIO_BYTES = 15 * 1024 * 1024;
@@ -72,6 +74,7 @@ async function route(request, env, ctx) {
     if (m === "DELETE") { await deleteLine(env, id); return json({ ok: true }); }
   }
   if (parts[1] === "audio" && parts.length === 3 && m === "GET") return audio(request, env, ctx, parts[2]);
+  if (parts[1] === "transcribe" && parts.length === 2 && m === "POST") return json(await transcribe(env, await body(request)));
   if (parts[1] === "admin" && parts.length === 2 && m === "GET") { requireAdmin(request, env); return json({ ok: true }); }
   throw new HttpError(404, "没有这个地址。");
 }
@@ -246,6 +249,29 @@ async function deleteLine(env, id) {
   if (!cur) return;
   await deleteFile(env, "lines/" + id + ".json", "删除第 " + pad(cur.data.no) + " 条");
   if (cur.data.voice && cur.data.voice.file) await deleteFile(env, "audio/" + cur.data.voice.file, "删除第 " + pad(cur.data.no) + " 条的录音");
+}
+
+// ---- speech to text ----
+// The page sends 16 kHz WAV pieces of at most ~25 s. The prompt keeps the output in simplified
+// Chinese with punctuation; when the model just echoes it back (silence), nothing was said.
+const STT_MODEL = "@cf/openai/whisper-large-v3-turbo";
+const STT_PROMPT = "以下是普通话的句子，使用简体中文和标点符号。";
+const MAX_PIECE_B64 = 2 * 1024 * 1024;
+async function transcribe(env, input) {
+  if (!env.AI) throw new HttpError(501, "服务器还没开语音识别。");
+  const audio = typeof input.audio === "string" ? input.audio : "";
+  if (!audio) throw new HttpError(400, "没收到录音。");
+  if (audio.length > MAX_PIECE_B64) throw new HttpError(413, "这一段录音太长了。");
+  let out;
+  try {
+    out = await env.AI.run(STT_MODEL, { audio, task: "transcribe", language: "zh", initial_prompt: STT_PROMPT });
+  } catch (e) {
+    console.error("stt", e && e.stack || e);
+    throw new HttpError(502, "语音识别暂时出错了，请稍后再试。");
+  }
+  let text = String((out && out.text) || "").trim();
+  if (text === STT_PROMPT || STT_PROMPT.includes(text)) text = "";
+  return { text };
 }
 
 // ---- audio ----

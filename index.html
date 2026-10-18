@@ -224,7 +224,7 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
     <textarea id="new-text" placeholder="把一句话写在这里"></textarea>
     <div class="row" id="new-voice-row"></div>
     <div class="row">
-      <label class="switch" for="live-toggle"><input type="checkbox" id="live-toggle" checked> 边说边转文字</label>
+      <label class="switch" for="live-toggle"><input type="checkbox" id="live-toggle" checked> 自动转文字</label>
       <label class="mic" for="mic" id="mic-wrap" hidden>麦克风 <select id="mic"></select></label>
     </div>
     <div class="row">
@@ -235,7 +235,7 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
     </div>
     <div class="status" id="status" hidden></div>
     <input type="file" id="file-new" accept="audio/*,.m4a,.mp3,.aac,.wav,.webm">
-    <div class="tip">点“录音”开始，再点一下停止。说的话会自动变成文字填进上面的框里，可以再改。第一次用时浏览器会问能不能用麦克风，选“允许”。也可以把录好的音频文件拖到这个框里。</div>
+    <div class="tip">点“录音”开始，再点一下停止。录完会自动转成文字填进上面的框里，可以再改。第一次用时浏览器会问能不能用麦克风，选“允许”。也可以把录好的音频文件拖到这个框里。</div>
   </section>
 
   <section class="list" id="list" aria-label="已收的文案"></section>
@@ -283,7 +283,11 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
     }
     let data = null;
     try { data = await res.json(); } catch (_) {}
-    if (!res.ok) throw new Error((data && data.error) || "服务器出错了（" + res.status + "）");
+    if (!res.ok) {
+      const err = new Error((data && data.error) || "服务器出错了（" + res.status + "）");
+      err.status = res.status;
+      throw err;
+    }
     return data;
   }
 
@@ -366,6 +370,11 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
     try { localStorage.setItem("live-on", $("live-toggle").checked ? "1" : "0"); } catch (_) {}
   });
   const liveOn = () => $("live-toggle").checked;
+  // Phones hand the microphone to speech recognition exclusively, which leaves the recording
+  // empty, so phones record only and get their text from the server afterwards.
+  const isMobile = !!(navigator.userAgentData && navigator.userAgentData.mobile) ||
+    /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 
   function setStatus(text, warn, action) {
     const s = $("status");
@@ -393,7 +402,7 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
 
   function startLive(target, onText) {
     live = null;
-    if (!SR || !liveOn()) return;
+    if (!SR || !liveOn() || isMobile) return;
     const L = { target, committed: "", session: "", stopping: false, failed: null, done: null, rec: null };
     const begin = () => {
       const r = new SR();
@@ -483,9 +492,57 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
     src.start();
     return (await off.startRendering()).getChannelData(0);
   }
-  async function transcribe(blob) {
-    let audio;
-    try { audio = await to16k(blob); } catch (_) { throw new Error("这段录音解不开"); }
+  // Speech goes to the server (Cloudflare Workers AI) in pieces of at most ~25 s, cut at the
+  // quietest moment, as 16 kHz WAV. If the server has no speech recognition, a computer can
+  // fall back to the SenseVoice model running in this page.
+  let cloudOff = false;
+  let allowLocal = modelOk;
+  function pieces(x) {
+    const RATE = 16000, MAX = 25 * RATE, MIN = 15 * RATE, WIN = RATE / 10;
+    const out = [];
+    let start = 0;
+    while (x.length - start > MAX) {
+      let best = start + 20 * RATE, bestE = Infinity;
+      for (let p = start + MIN; p + WIN < start + MAX; p += WIN / 2) {
+        let e = 0;
+        for (let i = p; i < p + WIN; i++) e += x[i] * x[i];
+        if (e < bestE) { bestE = e; best = p + WIN / 2; }
+      }
+      out.push(x.subarray(start, best));
+      start = best;
+    }
+    out.push(x.subarray(start));
+    return out;
+  }
+  function wavB64(samples) {
+    const RATE = 16000, padN = Math.round(0.3 * RATE), n = samples.length + 2 * padN;
+    const buf = new ArrayBuffer(44 + n * 2);
+    const v = new DataView(buf);
+    const str = (o, t) => { for (let i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); };
+    str(0, "RIFF"); v.setUint32(4, 36 + n * 2, true); str(8, "WAVE"); str(12, "fmt ");
+    v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, RATE, true); v.setUint32(28, RATE * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+    str(36, "data"); v.setUint32(40, n * 2, true);
+    for (let i = 0; i < samples.length; i++) {
+      const x = Math.max(-1, Math.min(1, samples[i]));
+      v.setInt16(44 + (padN + i) * 2, x < 0 ? x * 0x8000 : x * 0x7fff, true);
+    }
+    const bytes = new Uint8Array(buf);
+    let bin = "";
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return btoa(bin);
+  }
+  async function transcribeCloud(audio, onStep) {
+    const parts = pieces(audio);
+    let text = "";
+    for (let i = 0; i < parts.length; i++) {
+      if (onStep) onStep(i + 1, parts.length);
+      const res = await api("/api/transcribe", { method: "POST", body: { audio: wavB64(parts[i]) }, admin: false });
+      text += (res && res.text) || "";
+    }
+    return toSimplified(text.trim());
+  }
+  function transcribeLocal(audio) {
     const id = newId();
     return new Promise((resolve, reject) => {
       jobs[id] = { resolve, reject };
@@ -493,9 +550,21 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
       catch (e) { delete jobs[id]; reject(e); }
     });
   }
+  async function transcribe(blob, onStep) {
+    let audio;
+    try { audio = await to16k(blob); } catch (_) { throw new Error("这段录音解不开"); }
+    if (!cloudOff) {
+      try { return await transcribeCloud(audio, onStep); }
+      catch (e) { if (e.status !== 501) throw e; cloudOff = true; }
+    }
+    if (isMobile) throw new Error("服务器还没开语音识别，手机上暂时转不了文字。");
+    if (!allowLocal) { const e = new Error("NEED_LOCAL"); e.code = "NEED_LOCAL"; throw e; }
+    return transcribeLocal(audio);
+  }
   function friendly(e) {
     const m = String(e && e.message || e);
     if (m === "NOT_ISOLATED") return "页面需要刷新一次才能用中文识别。刷新后再点“转文字”。";
+    if (m === "NEED_LOCAL") return "服务器还没开语音识别。";
     if (/fetch|network|load|import|404|Failed/i.test(m)) return "下载转写模型时连不上网，换个网络再试。";
     return m;
   }
@@ -504,7 +573,7 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
     const voice = pendingNew;
     setStatus("正在把录音转成文字…");
     try {
-      const text = await transcribe(voice.blob);
+      const text = await transcribe(voice.blob, (i, n) => { if (n > 1) setStatus("正在把录音转成文字 " + i + "/" + n + "…"); });
       setStatus(null);
       if (!text) { setStatus("这段录音里没听出文字。", true); return; }
       const ta = $("new-text");
@@ -515,7 +584,12 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
       render();
       toast("已转成文字，填进框里了");
     } catch (e) {
-      setStatus("转文字没成功：" + friendly(e), true, { label: "再试一次", fn: transcribeNew });
+      if (e.code === "NEED_LOCAL") {
+        setStatus("服务器还没开语音识别。可以在这台电脑上下载中文识别模型来转（约 240MB，只下载一次）。", true,
+          { label: "下载并转文字", fn: () => { allowLocal = true; transcribeNew(); } });
+      } else {
+        setStatus("转文字没成功：" + friendly(e), true, { label: "再试一次", fn: transcribeNew });
+      }
     }
   }
   async function transcribeEntry(id) {
@@ -534,11 +608,6 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
     delete busyText[id];
     await reload();
   }
-  function offerNew() {
-    if (modelOk) { transcribeNew(); return; }
-    setStatus("这段录音还没转成文字。可以用中文识别模型转（第一次要下载约 240MB，之后不用网也能转）。", true, { label: "转文字", fn: transcribeNew });
-  }
-
   // ---- recording ----
   function pickRecType() {
     if (!window.MediaRecorder) return null;
@@ -581,8 +650,8 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
       const base = ta.value.trim() ? ta.value.trim() + "\n" : "";
       newBase = base;
       setStatus(null);
-      if (liveOn() && SR) { ta.readOnly = true; setStatus("正在听，说完点“停止”。"); }
-      else if (liveOn()) setStatus("这个浏览器不能边说边转文字（Chrome、Edge、Safari 可以）。录完可以用本地模型转。", true);
+      if (liveOn() && SR && !isMobile) { ta.readOnly = true; setStatus("正在听，说完点“停止”。"); }
+      else if (liveOn()) setStatus("正在录音，说完点“停止”，会自动转成文字。");
       startLive(target, (t) => { ta.value = base + t; });
     } else {
       liveText = "";
@@ -612,26 +681,28 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
     const type = (r.mr.mimeType || r.chunks[0] && r.chunks[0].type || "audio/webm").split(";")[0];
     const blob = new Blob(r.chunks, { type });
     const dur = (Date.now() - r.started) / 1000;
-    if (!blob.size || dur < 0.5) { setStatus(null); toast("录得太短了，再录一次。"); render(); return; }
+    if (!blob.size) {
+      setStatus("这次没录到声音。可能是别的应用正占着麦克风，关掉它再录一次；还不行就关掉“自动转文字”再试。", true);
+      render();
+      return;
+    }
+    if (dur < 0.5) { setStatus(null); toast("录得太短了，按住说完一句再点“停止”。"); render(); return; }
     if (peak < 0.01) {
-      setStatus("刚才这段录音没有声音，麦克风没收到声音。先在上面的“麦克风”里换一个试试；还不行就看 Windows 设置里的麦克风权限和输入设备。", true);
+      setStatus("刚才这段录音没有声音，麦克风没收到声音。先在上面的“麦克风”里换一个试试；还不行就检查系统设置里的麦克风权限。", true);
       $("mic-wrap").hidden = false;
       render();
       return;
     }
     const voice = { blob, type, dur, text: (r.liveResult && r.liveResult.text) || "" };
-    const needText = liveOn() && !voice.text && dur >= 1;
     if (r.target === "new") {
       pendingNew = voice;
       dropUrl("new");
       render();
-      if (liveOn() && modelOk) transcribeNew();
-      else if (needText) offerNew();
+      if (liveOn()) transcribeNew();
       else { setStatus(null); toast("录好了，" + fmtTime(dur) + "。点“收下这条”存起来。"); }
     } else {
       await setVoice(r.target, voice);
-      if (liveOn() && modelOk) transcribeEntry(r.target);
-      else toast(needText ? "录音已存好。点这条下面的“转文字”可以把它变成文字。" : "录音已存好");
+      if (liveOn()) transcribeEntry(r.target);
     }
   }
   // ---- microphone choice and input level ----
@@ -671,6 +742,7 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
     let ac, raf = 0, peak = 0;
     try {
       ac = new AC();
+      if (ac.state === "suspended" && ac.resume) ac.resume().catch(() => {});
       const an = ac.createAnalyser();
       an.fftSize = 1024;
       ac.createMediaStreamSource(stream).connect(an);
@@ -686,7 +758,14 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
       };
       tick();
     } catch (_) { return null; }
-    return { stop() { cancelAnimationFrame(raf); try { ac.close(); } catch (_) {} return peak; } };
+    return {
+      stop() {
+        cancelAnimationFrame(raf);
+        const trusted = ac.state === "running";
+        try { ac.close(); } catch (_) {}
+        return trusted ? peak : 1;
+      },
+    };
   }
 
   function updateRecClock() {
@@ -1136,14 +1215,14 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
     if (!f) return;
     try { pendingNew = await fromFile(f); newBase = null; dropUrl("new"); render(); toast("已附上：" + f.name); }
     catch (e) { toast(e.message); return; }
-    if (liveOn()) offerNew();
+    if (liveOn()) transcribeNew();
   }
   async function attachTo(id, f) {
     if (!f || !isAdmin) return;
     let voice;
     try { voice = await fromFile(f); } catch (e) { toast(e.message); return; }
     await setVoice(id, voice);
-    if (liveOn() && modelOk) transcribeEntry(id);
+    if (liveOn()) transcribeEntry(id);
   }
   $("file-new").addEventListener("change", (ev) => acceptNew(ev.target.files && ev.target.files[0]));
   $("file-entry").addEventListener("change", (ev) => {
