@@ -70,13 +70,17 @@ async function route(request, env, ctx) {
     if (m === "GET") return json(await listAll(env));
     if (m === "POST") return json({ line: await createLine(env, await body(request), isAdmin(request, env)) }, 201);
   }
+  if (parts[1] === "lines" && parts.length === 4 && parts[3] === "ai" && m === "POST") {
+    return json({ line: await aiForLine(env, checkId(parts[2]), await body(request), isAdmin(request, env)) });
+  }
   if (parts[1] === "lines" && parts.length === 3) {
     const id = checkId(parts[2]);
     requireAdmin(request, env);
     if (m === "PATCH") return json({ line: await updateLine(env, id, await body(request)) });
     if (m === "DELETE") { await deleteLine(env, id); return json({ ok: true }); }
   }
-  if (parts[1] === "audio" && parts.length === 3 && m === "GET") return audio(request, env, ctx, parts[2]);
+  if (parts[1] === "audio" && parts.length === 3 && m === "GET") return stored(request, env, ctx, "audio", parts[2]);
+  if (parts[1] === "image" && parts.length === 3 && m === "GET") return stored(request, env, ctx, "images", parts[2]);
   if (parts[1] === "transcribe" && parts.length === 2 && m === "POST") return json(await transcribe(env, await body(request)));
   if (parts[1] === "probe" && parts.length === 2 && m === "POST") return json(await probe(request, env, await body(request)));
   if (parts[1] === "admin" && parts.length === 2 && m === "GET") { requireAdmin(request, env); return json({ ok: true }); }
@@ -285,6 +289,8 @@ async function deleteLine(env, id) {
   if (!cur) return;
   await deleteFile(env, "lines/" + id + ".json", "删除第 " + pad(cur.data.no) + " 条");
   if (cur.data.voice && cur.data.voice.file) await deleteFile(env, "audio/" + cur.data.voice.file, "删除第 " + pad(cur.data.no) + " 条的录音");
+  const img = cur.data.ai && cur.data.ai.image && cur.data.ai.image.file;
+  if (img) await deleteFile(env, "images/" + img, "删除第 " + pad(cur.data.no) + " 条的配图");
 }
 
 // ---- speech to text ----
@@ -310,6 +316,104 @@ async function transcribe(env, input) {
   return { text };
 }
 
+// ---- AI ----
+// Text comes from gpt-oss-120b (fast, the best Chinese in our tests) with llama-4-scout as a
+// fallback; pictures from flux-1-schnell. Results are stored on the line so everyone sees them.
+const TEXT_MODEL = "@cf/openai/gpt-oss-120b";
+const FALLBACK_TEXT_MODEL = "@cf/meta/llama-4-scout-17b-16e-instruct";
+const IMAGE_MODEL = "@cf/black-forest-labs/flux-1-schnell";
+const AI_KINDS = {
+  summary: "用两三句话概括下面这段内容的核心意思。只输出概括本身，用简体中文。",
+  minutes: "把下面这段录音内容整理成会议纪要，用简体中文。分“要点”“决定”“待办”三部分，每部分用短横线列表；待办尽量写清负责人和时间，原文没有的就不写，不要编造。只输出纪要本身。",
+  prompt: "下面是一段口述的想法。把它整理成一份可以直接交给 AI 使用的提示词，用简体中文，包含：角色、背景、任务、具体要求、输出格式。保留原意，补全必要的约束，不要编造事实。只输出提示词本身。",
+  copy: "下面是一段文案或想法。保留原意，改写出 3 个不同风格的短文案（适合发朋友圈或做视频口播），每个不超过 60 字，用“1.”“2.”“3.”编号。只输出这 3 条。",
+};
+const MAX_AI_SOURCE = 8000;
+
+function sourceText(line) {
+  const parts = [line.text || ""];
+  const heard = line.voice && line.voice.text;
+  if (heard && heard.trim() !== (line.text || "").trim()) parts.push("录音原话：" + heard);
+  return parts.join("\n\n").slice(0, MAX_AI_SOURCE);
+}
+
+async function chat(env, system, user) {
+  try {
+    const res = await env.AI.run(TEXT_MODEL, {
+      input: [{ role: "system", content: system }, { role: "user", content: user }],
+      reasoning: { effort: "low" },
+    });
+    const msg = (res && Array.isArray(res.output) ? res.output : []).find((o) => o.type === "message");
+    const text = (res && res.output_text) || (msg ? (msg.content || []).map((c) => c.text || "").join("") : "");
+    if (text.trim()) return text.trim();
+  } catch (e) {
+    console.error("chat", TEXT_MODEL, e && e.stack || e);
+  }
+  const res = await env.AI.run(FALLBACK_TEXT_MODEL, {
+    messages: [{ role: "system", content: system }, { role: "user", content: user }],
+    max_tokens: 1500,
+  });
+  return String((res && (res.response || res.choices?.[0]?.message?.content)) || "").trim();
+}
+
+async function writeAi(env, kind, text) {
+  if (!AI_KINDS[kind]) throw new HttpError(400, "不认识这种整理方式。");
+  if (!text.trim()) throw new HttpError(400, "这一条没有可以整理的文字。");
+  const out = await chat(env, "你是一个细心的中文写作助手。" + AI_KINDS[kind], text);
+  if (!out) throw new HttpError(502, "AI 没有写出内容，请再试一次。");
+  return out;
+}
+
+async function makeImage(env, text) {
+  if (!text.trim()) throw new HttpError(400, "这一条没有可以配图的文字。");
+  let prompt = await chat(env,
+    "You write prompts for an image model. Read the Chinese text and describe ONE picture that fits its mood. " +
+    "English, under 60 words, concrete scene, lighting and style; no words, letters or captions in the picture. Output the prompt only.",
+    text.slice(0, 2000));
+  prompt = prompt.replace(/^["'\s]+|["'\s]+$/g, "").slice(0, 600) || "a calm minimal illustration, soft light";
+  const res = await env.AI.run(IMAGE_MODEL, { prompt, steps: 6 });
+  const b64 = res && typeof res.image === "string" ? res.image : "";
+  if (!b64) throw new HttpError(502, "配图没有生成出来，请再试一次。");
+  return { prompt, b64 };
+}
+
+async function aiForLine(env, id, input, admin) {
+  if (!env.AI) throw new HttpError(501, "服务器还没开 AI。");
+  const kind = String(input.kind || "");
+  if (kind !== "image" && !AI_KINDS[kind]) throw new HttpError(400, "不认识这种整理方式。");
+  const cur = await readJson(env, "lines/" + id + ".json");
+  if (!cur) throw new HttpError(404, "这一条已经不在了。");
+  const line = cur.data;
+  line.ai = line.ai || {};
+  // Anyone can fill in a missing result; replacing one is for the owner.
+  if (line.ai[kind] && !admin) throw new HttpError(403, "已经整理过了，只有本子的主人能重新生成。");
+  const old = line.ai[kind];
+  let label;
+  try {
+    if (kind === "image") {
+      const pic = await makeImage(env, sourceText(line));
+      const file = id + "-" + randomId().slice(0, 6) + ".jpg";
+      await putFile(env, "images/" + file, pic.b64, "第 " + pad(line.no) + " 条的配图");
+      line.ai.image = { file, prompt: pic.prompt, at: Date.now() };
+      label = "配图";
+    } else {
+      line.ai[kind] = { text: await writeAi(env, kind, sourceText(line)), at: Date.now() };
+      label = { summary: "总结", minutes: "会议纪要", prompt: "提示词", copy: "改写文案" }[kind];
+    }
+  } catch (e) {
+    if (e instanceof HttpError) throw e;
+    console.error("ai", kind, e && e.stack || e);
+    throw new HttpError(502, "AI 暂时出错了，请稍后再试。");
+  }
+  // Re-read so a save made meanwhile (an edit, another AI result) is not lost.
+  const fresh = await readJson(env, "lines/" + id + ".json");
+  if (!fresh) throw new HttpError(404, "这一条已经不在了。");
+  fresh.data.ai = Object.assign({}, fresh.data.ai, { [kind]: line.ai[kind] });
+  await putFile(env, "lines/" + id + ".json", b64FromUtf8(JSON.stringify(fresh.data, null, 2) + "\n"), "第 " + pad(line.no) + " 条：AI " + label, fresh.sha);
+  if (kind === "image" && old && old.file) await deleteFile(env, "images/" + old.file, "删除第 " + pad(line.no) + " 条的旧配图");
+  return fresh.data;
+}
+
 // ---- checks ----
 // Lets the "Check site" workflow try Workers AI models from inside this Worker. It only works
 // while that workflow has set a one-off PROBE_KEY secret, which it deletes right after.
@@ -318,6 +422,19 @@ async function probe(request, env, input) {
   if (!env.PROBE_KEY || key !== env.PROBE_KEY) throw new HttpError(404, "没有这个地址。");
   if (!env.AI) throw new HttpError(501, "服务器还没开 Workers AI。");
   const out = [];
+  for (const t of (Array.isArray(input.tasks) ? input.tasks : []).slice(0, 6)) {
+    const started = Date.now();
+    try {
+      if (t.kind === "image") {
+        const pic = await makeImage(env, String(t.text || ""));
+        out.push({ model: "task:image", ok: true, ms: Date.now() - started, result: { prompt: pic.prompt, image_b64_len: pic.b64.length } });
+      } else {
+        out.push({ model: "task:" + t.kind, ok: true, ms: Date.now() - started, result: await writeAi(env, t.kind, String(t.text || "")) });
+      }
+    } catch (e) {
+      out.push({ model: "task:" + t.kind, ok: false, ms: Date.now() - started, error: String(e && e.message || e).slice(0, 300) });
+    }
+  }
   for (const r of (Array.isArray(input.runs) ? input.runs : []).slice(0, 8)) {
     const t = Date.now();
     try {
@@ -337,24 +454,26 @@ async function probe(request, env, input) {
 // ---- audio ----
 // Recordings never change under a file name, so they are cached for good. Byte ranges are
 // answered here because Safari will not play audio from a server that ignores them.
-async function audio(request, env, ctx, file) {
+const FILE_TYPES = { ...AUDIO_TYPES, jpg: "image/jpeg", png: "image/png" };
+async function stored(request, env, ctx, dir, file) {
   const mt = /^([a-z0-9]{6,40}-[a-z0-9]{6})\.([a-z0-9]{2,4})$/.exec(file);
-  if (!mt || !AUDIO_TYPES[mt[2]]) throw new HttpError(404, "没有这段录音。");
+  const type = mt && FILE_TYPES[mt[2]];
+  if (!type || (dir === "audio") !== Boolean(AUDIO_TYPES[mt[2]])) throw new HttpError(404, "没有这个文件。");
   const cache = typeof caches !== "undefined" ? caches.default : null;
-  const key = new Request(new URL(request.url).origin + "/api/audio/" + file);
+  const key = new Request(new URL(request.url).origin + "/api/" + (dir === "audio" ? "audio" : "image") + "/" + file);
   let full = cache ? await cache.match(key) : null;
   if (!full) {
-    const res = await gh(env, repoPath(env, "audio/" + file) + "?ref=" + BRANCH, { headers: { Accept: "application/vnd.github.raw" } });
-    if (res.status === 404) throw new HttpError(404, "没有这段录音。");
-    if (!res.ok) await ghFail(res, "audio " + file);
+    const res = await gh(env, repoPath(env, dir + "/" + file) + "?ref=" + BRANCH, { headers: { Accept: "application/vnd.github.raw" } });
+    if (res.status === 404) throw new HttpError(404, "没有这个文件。");
+    if (!res.ok) await ghFail(res, dir + " " + file);
     full = new Response(await res.arrayBuffer(), {
-      headers: { "Content-Type": AUDIO_TYPES[mt[2]], "Cache-Control": "public, max-age=31536000, immutable" },
+      headers: { "Content-Type": type, "Cache-Control": "public, max-age=31536000, immutable" },
     });
     if (cache) ctx.waitUntil(cache.put(key, full.clone()));
   }
   const bytes = new Uint8Array(await full.arrayBuffer());
   const headers = {
-    "Content-Type": AUDIO_TYPES[mt[2]],
+    "Content-Type": type,
     "Cache-Control": "public, max-age=31536000, immutable",
     "Accept-Ranges": "bytes",
   };

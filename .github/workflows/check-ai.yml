@@ -1,6 +1,7 @@
-# Temporary: tries candidate Workers AI models through the Worker's /api/probe and reports
-# how each answers. Sets a one-off PROBE_KEY secret on the Worker and deletes it afterwards.
-name: Probe AI models
+# Runs the Worker's AI features (summary, minutes, prompt, rewrite, picture) on a sample text
+# through /api/probe and reports the results. Nothing is stored. Sets a one-off PROBE_KEY
+# secret on the Worker and deletes it afterwards.
+name: Check AI
 
 on:
   workflow_dispatch:
@@ -28,18 +29,13 @@ jobs:
           sleep 15
           KEY="$KEY" python3 - <<'EOF'
           import json, os, urllib.request, urllib.error
-          SAMPLE = "今天开会讨论了新版官网上线的时间，大家同意下周三上线，小王负责测试，小李负责写上线公告，另外预算还需要再和财务确认一次。"
-          ASK = "把下面这段录音转写整理成会议纪要，用简体中文，分“要点”“决定”“待办”三部分，每部分用短横线列表：\n\n" + SAMPLE
-          msgs = [{"role": "system", "content": "你是一个中文写作助手。"}, {"role": "user", "content": ASK}]
-          runs = [
-              {"model": "@cf/qwen/qwen3-30b-a3b-fp8", "input": {"messages": msgs, "max_tokens": 700}},
-              {"model": "@cf/meta/llama-3.3-70b-instruct-fp8-fast", "input": {"messages": msgs, "max_tokens": 700}},
-              {"model": "@cf/meta/llama-4-scout-17b-16e-instruct", "input": {"messages": msgs, "max_tokens": 700}},
-              {"model": "@cf/openai/gpt-oss-120b", "input": {"input": msgs, "reasoning": {"effort": "low"}}},
-              {"model": "@cf/qwen/qwq-32b", "input": {"messages": msgs, "max_tokens": 1500}},
-              {"model": "@cf/black-forest-labs/flux-1-schnell", "input": {"prompt": "a quiet desk by a window at dawn, notebook and microphone, soft light, minimal illustration", "steps": 4}},
-          ]
-          req = urllib.request.Request(os.environ["API"] + "/api/probe", data=json.dumps({"runs": runs}).encode(),
+          MEMO = "今天开会讨论了新版官网上线的时间，大家同意下周三上线，小王负责测试，小李负责写上线公告，另外预算还需要再和财务确认一次。"
+          IDEA = "我想让 AI 帮我把每周的工作周报写得更有条理，要突出成果和数据，语气专业但不要太官方，最后列出下周计划。"
+          LINE = "世界上有三种人，一种正在发光，一种正在燃烧，一种正在腐烂。"
+          runs = []
+          tasks = [{"kind": "summary", "text": MEMO}, {"kind": "minutes", "text": MEMO}, {"kind": "prompt", "text": IDEA},
+                   {"kind": "copy", "text": LINE}, {"kind": "image", "text": LINE}]
+          req = urllib.request.Request(os.environ["API"] + "/api/probe", data=json.dumps({"runs": runs, "tasks": tasks}).encode(),
               headers={"Content-Type": "application/json", "X-Probe-Key": os.environ["KEY"], "User-Agent": "probe"})
           for attempt in range(4):
               try:
