@@ -1,0 +1,57 @@
+# Temporary: tries candidate Workers AI models with a sample text and reports how each answers.
+name: Probe AI models
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Try models
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, time, urllib.request, urllib.error
+          token, account = os.environ["CF_TOKEN"].strip(), os.environ["CF_ACCOUNT"].strip()
+          SAMPLE = "今天开会讨论了新版官网上线的时间，大家同意下周三上线，小王负责测试，小李负责写上线公告，另外预算还需要再和财务确认一次。"
+          ASK = "把下面这段录音转写整理成会议纪要，用简体中文，分“要点”“决定”“待办”三部分，每部分用短横线列表：\n\n" + SAMPLE
+
+          def run(model, payload):
+              req = urllib.request.Request(f"https://api.cloudflare.com/client/v4/accounts/{account}/ai/run/{model}",
+                  data=json.dumps(payload).encode(), headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
+              t = time.time()
+              try:
+                  with urllib.request.urlopen(req, timeout=120) as r:
+                      body = r.read(); ctype = r.headers.get("Content-Type", "")
+                      return r.status, body, ctype, time.time() - t
+              except urllib.error.HTTPError as e:
+                  return e.code, e.read(), "", time.time() - t
+              except Exception as e:
+                  return 0, str(e).encode(), "", time.time() - t
+
+          def say(title, msg):
+              print(f"::notice title={title}::" + msg.replace("\n", " ⏎ ")[:900])
+
+          for model in ["@cf/qwen/qwen3-30b-a3b-fp8", "@cf/meta/llama-3.3-70b-instruct-fp8-fast", "@cf/openai/gpt-oss-120b", "@cf/qwen/qwq-32b"]:
+              payload = {"messages": [{"role": "system", "content": "你是一个中文写作助手。"}, {"role": "user", "content": ASK}], "max_tokens": 700}
+              if "gpt-oss" in model:
+                  payload = {"input": [{"role": "system", "content": "你是一个中文写作助手。"}, {"role": "user", "content": ASK}], "reasoning": {"effort": "low"}}
+              s, body, ctype, dt = run(model, payload)
+              try:
+                  j = json.loads(body); res = j.get("result", j)
+                  keys = list(res.keys()) if isinstance(res, dict) else type(res).__name__
+                  say(f"{model} {s} {dt:.1f}s", f"keys={keys} body={json.dumps(res, ensure_ascii=False)[:800]}")
+              except Exception:
+                  say(f"{model} {s} {dt:.1f}s", body[:300].decode("utf-8", "replace"))
+
+          s, body, ctype, dt = run("@cf/black-forest-labs/flux-1-schnell", {"prompt": "a quiet desk by a window at dawn, notebook and microphone, soft light, minimal illustration", "steps": 4})
+          try:
+              j = json.loads(body); res = j.get("result", j)
+              img = res.get("image", "") if isinstance(res, dict) else ""
+              say(f"flux {s} {dt:.1f}s", f"keys={list(res.keys()) if isinstance(res, dict) else ''} image_b64_len={len(img)} head={img[:16]}")
+          except Exception:
+              say(f"flux {s} {dt:.1f}s", f"ctype={ctype} bytes={len(body)} head={body[:40]!r}")
+          EOF
