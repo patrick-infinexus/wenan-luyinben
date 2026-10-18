@@ -78,6 +78,7 @@ async function route(request, env, ctx) {
   }
   if (parts[1] === "audio" && parts.length === 3 && m === "GET") return audio(request, env, ctx, parts[2]);
   if (parts[1] === "transcribe" && parts.length === 2 && m === "POST") return json(await transcribe(env, await body(request)));
+  if (parts[1] === "probe" && parts.length === 2 && m === "POST") return json(await probe(request, env, await body(request)));
   if (parts[1] === "admin" && parts.length === 2 && m === "GET") { requireAdmin(request, env); return json({ ok: true }); }
   if (parts[1] === "categories" && parts.length === 2 && m === "PUT") {
     requireAdmin(request, env);
@@ -307,6 +308,30 @@ async function transcribe(env, input) {
   let text = String((out && out.text) || "").trim();
   if (text === STT_PROMPT || STT_PROMPT.includes(text)) text = "";
   return { text };
+}
+
+// ---- checks ----
+// Lets the "Check site" workflow try Workers AI models from inside this Worker. It only works
+// while that workflow has set a one-off PROBE_KEY secret, which it deletes right after.
+async function probe(request, env, input) {
+  const key = request.headers.get("X-Probe-Key") || "";
+  if (!env.PROBE_KEY || key !== env.PROBE_KEY) throw new HttpError(404, "没有这个地址。");
+  if (!env.AI) throw new HttpError(501, "服务器还没开 Workers AI。");
+  const out = [];
+  for (const r of (Array.isArray(input.runs) ? input.runs : []).slice(0, 8)) {
+    const t = Date.now();
+    try {
+      const res = await env.AI.run(String(r.model), r.input || {});
+      let shown;
+      if (res instanceof ReadableStream) shown = { stream: true, bytes: (await new Response(res).arrayBuffer()).byteLength };
+      else if (res && typeof res.image === "string") shown = { image_b64_len: res.image.length };
+      else shown = JSON.stringify(res).slice(0, 1500);
+      out.push({ model: r.model, ok: true, ms: Date.now() - t, result: shown });
+    } catch (e) {
+      out.push({ model: r.model, ok: false, ms: Date.now() - t, error: String(e && e.message || e).slice(0, 300) });
+    }
+  }
+  return { results: out };
 }
 
 // ---- audio ----

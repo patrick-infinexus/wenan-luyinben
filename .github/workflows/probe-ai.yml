@@ -1,4 +1,5 @@
-# Temporary: tries candidate Workers AI models with a sample text and reports how each answers.
+# Temporary: tries candidate Workers AI models through the Worker's /api/probe and reports
+# how each answers. Sets a one-off PROBE_KEY secret on the Worker and deletes it afterwards.
 name: Probe AI models
 
 on:
@@ -7,51 +8,50 @@ on:
 jobs:
   probe:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
     steps:
-      - name: Try models
+      - uses: actions/checkout@v4
+
+      - name: Probe
         env:
           CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          API: https://wenan-luyinben.patrick-f78.workers.dev
         run: |
-          python3 - <<'EOF'
-          import json, os, time, urllib.request, urllib.error
-          token, account = os.environ["CF_TOKEN"].strip(), os.environ["CF_ACCOUNT"].strip()
+          export CLOUDFLARE_API_TOKEN=$(printf '%s' "$CF_TOKEN" | tr -d '[:space:]')
+          export CLOUDFLARE_ACCOUNT_ID=$(printf '%s' "$CF_ACCOUNT" | tr -d '[:space:]')
+          KEY=$(openssl rand -hex 24)
+          printf '%s' "$KEY" | npx --yes wrangler@4.147.0 secret put PROBE_KEY >/dev/null
+          trap 'yes | npx --yes wrangler@4.147.0 secret delete PROBE_KEY >/dev/null 2>&1 || true' EXIT
+          sleep 15
+          KEY="$KEY" python3 - <<'EOF'
+          import json, os, urllib.request, urllib.error
           SAMPLE = "今天开会讨论了新版官网上线的时间，大家同意下周三上线，小王负责测试，小李负责写上线公告，另外预算还需要再和财务确认一次。"
           ASK = "把下面这段录音转写整理成会议纪要，用简体中文，分“要点”“决定”“待办”三部分，每部分用短横线列表：\n\n" + SAMPLE
-
-          def run(model, payload):
-              req = urllib.request.Request(f"https://api.cloudflare.com/client/v4/accounts/{account}/ai/run/{model}",
-                  data=json.dumps(payload).encode(), headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
-              t = time.time()
+          msgs = [{"role": "system", "content": "你是一个中文写作助手。"}, {"role": "user", "content": ASK}]
+          runs = [
+              {"model": "@cf/qwen/qwen3-30b-a3b-fp8", "input": {"messages": msgs, "max_tokens": 700}},
+              {"model": "@cf/meta/llama-3.3-70b-instruct-fp8-fast", "input": {"messages": msgs, "max_tokens": 700}},
+              {"model": "@cf/meta/llama-4-scout-17b-16e-instruct", "input": {"messages": msgs, "max_tokens": 700}},
+              {"model": "@cf/openai/gpt-oss-120b", "input": {"input": msgs, "reasoning": {"effort": "low"}}},
+              {"model": "@cf/qwen/qwq-32b", "input": {"messages": msgs, "max_tokens": 1500}},
+              {"model": "@cf/black-forest-labs/flux-1-schnell", "input": {"prompt": "a quiet desk by a window at dawn, notebook and microphone, soft light, minimal illustration", "steps": 4}},
+          ]
+          req = urllib.request.Request(os.environ["API"] + "/api/probe", data=json.dumps({"runs": runs}).encode(),
+              headers={"Content-Type": "application/json", "X-Probe-Key": os.environ["KEY"], "User-Agent": "probe"})
+          for attempt in range(4):
               try:
-                  with urllib.request.urlopen(req, timeout=120) as r:
-                      body = r.read(); ctype = r.headers.get("Content-Type", "")
-                      return r.status, body, ctype, time.time() - t
+                  with urllib.request.urlopen(req, timeout=300) as r:
+                      data = json.loads(r.read()); break
               except urllib.error.HTTPError as e:
-                  return e.code, e.read(), "", time.time() - t
-              except Exception as e:
-                  return 0, str(e).encode(), "", time.time() - t
-
-          def say(title, msg):
-              print(f"::notice title={title}::" + msg.replace("\n", " ⏎ ")[:900])
-
-          for model in ["@cf/qwen/qwen3-30b-a3b-fp8", "@cf/meta/llama-3.3-70b-instruct-fp8-fast", "@cf/openai/gpt-oss-120b", "@cf/qwen/qwq-32b"]:
-              payload = {"messages": [{"role": "system", "content": "你是一个中文写作助手。"}, {"role": "user", "content": ASK}], "max_tokens": 700}
-              if "gpt-oss" in model:
-                  payload = {"input": [{"role": "system", "content": "你是一个中文写作助手。"}, {"role": "user", "content": ASK}], "reasoning": {"effort": "low"}}
-              s, body, ctype, dt = run(model, payload)
-              try:
-                  j = json.loads(body); res = j.get("result", j)
-                  keys = list(res.keys()) if isinstance(res, dict) else type(res).__name__
-                  say(f"{model} {s} {dt:.1f}s", f"keys={keys} body={json.dumps(res, ensure_ascii=False)[:800]}")
-              except Exception:
-                  say(f"{model} {s} {dt:.1f}s", body[:300].decode("utf-8", "replace"))
-
-          s, body, ctype, dt = run("@cf/black-forest-labs/flux-1-schnell", {"prompt": "a quiet desk by a window at dawn, notebook and microphone, soft light, minimal illustration", "steps": 4})
-          try:
-              j = json.loads(body); res = j.get("result", j)
-              img = res.get("image", "") if isinstance(res, dict) else ""
-              say(f"flux {s} {dt:.1f}s", f"keys={list(res.keys()) if isinstance(res, dict) else ''} image_b64_len={len(img)} head={img[:16]}")
-          except Exception:
-              say(f"flux {s} {dt:.1f}s", f"ctype={ctype} bytes={len(body)} head={body[:40]!r}")
+                  data = {"error": e.code, "body": e.read()[:300].decode("utf-8", "replace")}
+                  if e.code != 404: break
+                  import time; time.sleep(10)
+          for r in data.get("results", []):
+              body = json.dumps(r.get("result") if r.get("ok") else r.get("error"), ensure_ascii=False)
+              print(f"::notice title={r['model']} {'OK' if r.get('ok') else 'FAIL'} {r['ms']}ms::" + body.replace("\\n", " ⏎ ")[:1200])
+          if "results" not in data:
+              print("::error title=probe::" + json.dumps(data, ensure_ascii=False)[:500])
           EOF
