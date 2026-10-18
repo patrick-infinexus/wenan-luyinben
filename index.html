@@ -1,0 +1,711 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>文案录音本</title>
+<meta name="theme-color" content="#eef0ec">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@500;700&family=Noto+Sans+SC:wght@400;500&display=swap">
+<style>
+/* Layout: one narrow reading column, like a pocket notebook; each line is a page entry with its seal number and its voice. */
+:root {
+  --paper: #eef0ec;
+  --sheet: #f8f9f6;
+  --ink: #1d232b;
+  --ink-soft: #5d6670;
+  --rule: #d5dad3;
+  --dai: #2f4a73;          /* 黛蓝: actions */
+  --zhu: #b8432f;          /* 朱砂: the seal, recording */
+  --zhu-wash: #f3e1dc;
+  --dai-wash: #e2e8f1;
+  --font-quote: "Noto Serif SC", "Songti SC", "STSong", serif;
+  --font-ui: "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --font-num: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #15191e; --sheet: #1c2128; --ink: #e6e8e4; --ink-soft: #9aa3ac; --rule: #2d343c;
+    --dai: #8eaad6; --zhu: #e07a64; --zhu-wash: #3a2622; --dai-wash: #222c3b; color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 15px;
+  line-height: 1.6;
+  -webkit-text-size-adjust: 100%;
+}
+.wrap {
+  max-width: 620px;
+  margin: 0 auto;
+  padding-top: max(32px, env(safe-area-inset-top, 0px));
+  padding-bottom: max(64px, env(safe-area-inset-bottom, 0px));
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+header { display: flex; flex-direction: column; gap: 4px; }
+h1 { font-family: var(--font-quote); font-weight: 700; font-size: 28px; letter-spacing: 0.06em; margin: 0; }
+.tally { color: var(--ink-soft); font-size: 13px; font-variant-numeric: tabular-nums; }
+
+.compose {
+  background: var(--sheet);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.compose label.lbl { font-size: 12px; letter-spacing: 0.12em; color: var(--ink-soft); }
+textarea {
+  width: 100%;
+  min-height: 84px;
+  resize: vertical;
+  font-family: var(--font-quote);
+  font-size: 17px;
+  line-height: 1.75;
+  color: var(--ink);
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--rule);
+  padding: 4px 0 8px;
+  outline: none;
+}
+textarea:focus { border-bottom-color: var(--dai); }
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.row .spacer { flex: 1; }
+
+button {
+  font-family: var(--font-ui);
+  font-size: 14px;
+  border-radius: 999px;
+  padding: 7px 14px;
+  border: 1px solid var(--rule);
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  line-height: 1.3;
+}
+button:hover { border-color: var(--dai); color: var(--dai); }
+button:focus-visible, textarea:focus-visible { outline: 2px solid var(--dai); outline-offset: 2px; }
+button.primary { background: var(--dai); border-color: var(--dai); color: var(--sheet); }
+button.primary:hover { color: var(--sheet); filter: brightness(1.08); }
+button.danger { color: var(--zhu); border-color: var(--zhu); }
+button[disabled] { opacity: 0.5; cursor: default; }
+input[type="file"] { display: none; }
+
+/* the record control */
+.rec {
+  display: inline-flex; align-items: center; gap: 8px;
+  border-color: var(--zhu); color: var(--zhu);
+}
+.rec:hover { border-color: var(--zhu); color: var(--zhu); background: var(--zhu-wash); }
+.rec .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--zhu); flex: none; }
+.rec.on { background: var(--zhu); color: var(--sheet); }
+.rec.on .dot { background: var(--sheet); border-radius: 2px; }
+.rec .clock { font-family: var(--font-num); font-variant-numeric: tabular-nums; }
+@media (prefers-reduced-motion: no-preference) {
+  .rec.on .dot { animation: blink 1s steps(2, start) infinite; }
+  @keyframes blink { to { opacity: 0.3; } }
+}
+
+.voice {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--dai-wash);
+  border-radius: 999px;
+  padding: 4px 14px 4px 4px;
+  max-width: 340px;
+}
+.voice .play {
+  width: 34px; height: 34px; padding: 0;
+  border-radius: 50%;
+  background: var(--dai); border-color: var(--dai); color: var(--sheet);
+  display: grid; place-items: center;
+  flex: none;
+}
+.voice .play svg { width: 14px; height: 14px; fill: currentColor; }
+.voice .track { flex: 1; height: 4px; background: var(--rule); border-radius: 2px; position: relative; overflow: hidden; cursor: pointer; }
+.voice .fill { position: absolute; inset: 0 auto 0 0; width: 0; background: var(--dai); }
+.voice .time { font-family: var(--font-num); font-size: 12px; color: var(--ink-soft); font-variant-numeric: tabular-nums; min-width: 34px; text-align: right; }
+
+.tip { font-size: 13px; color: var(--ink-soft); border-left: 2px solid var(--rule); padding-left: 10px; }
+
+.list { display: flex; flex-direction: column; }
+.entry {
+  display: grid;
+  grid-template-columns: 44px 1fr;
+  gap: 14px;
+  padding-block: 22px;
+  border-top: 1px solid var(--rule);
+}
+.entry:last-child { border-bottom: 1px solid var(--rule); }
+.seal {
+  width: 40px; height: 40px;
+  border: 1.5px solid var(--zhu);
+  color: var(--zhu);
+  border-radius: 4px;
+  display: grid; place-items: center;
+  font-family: var(--font-num);
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  transform: rotate(-3deg);
+}
+.body { min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+.quote { font-family: var(--font-quote); font-weight: 500; font-size: 19px; line-height: 1.8; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.meta { font-size: 12px; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+.actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.actions button { font-size: 12px; padding: 4px 10px; color: var(--ink-soft); }
+.actions button.rec { color: var(--zhu); }
+.actions button.rec.on { color: var(--sheet); }
+.confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; color: var(--zhu); background: var(--zhu-wash); padding: 8px 12px; border-radius: 6px; }
+.state { color: var(--ink-soft); padding-block: 24px; }
+
+.backup { display: flex; flex-direction: column; gap: 10px; font-size: 13px; color: var(--ink-soft); }
+.backup .row button { font-size: 13px; }
+.compose.dropping, .entry.dropping { outline: 2px dashed var(--dai); outline-offset: 4px; background: var(--dai-wash); }
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  background: var(--ink); color: var(--paper);
+  font-size: 13px;
+  padding: 8px 16px; border-radius: 999px;
+  max-width: calc(100% - 40px);
+  z-index: 5;
+}
+[hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>文案录音本</h1>
+    <div class="tally" id="tally">正在打开…</div>
+  </header>
+
+  <section class="compose" id="compose" aria-label="新收一条">
+    <label class="lbl" for="new-text">新收一条</label>
+    <textarea id="new-text" placeholder="把一句话写在这里"></textarea>
+    <div class="row" id="new-voice-row"></div>
+    <div class="row">
+      <button type="button" class="rec" id="rec-new"><span class="dot"></span><span class="label">录音</span></button>
+      <button type="button" id="pick-new">选录音文件</button>
+      <span class="spacer"></span>
+      <button type="button" class="primary" id="save-new">收下这条</button>
+    </div>
+    <input type="file" id="file-new" accept="audio/*,.m4a,.mp3,.aac,.wav,.webm">
+    <div class="tip">点“录音”开始，再点一下停止。第一次用时浏览器会问能不能用麦克风，选“允许”。也可以把录好的音频文件拖到这个框里。</div>
+  </section>
+
+  <section class="list" id="list" aria-label="已收的文案"></section>
+  <div class="state" id="state" hidden></div>
+
+  <section class="backup" aria-label="备份">
+    <div>文案和录音都存在这个浏览器里，别的手机或电脑看不到。换设备或清理浏览器之前，先导出一份备份。</div>
+    <div class="row">
+      <button type="button" id="export">导出备份</button>
+      <button type="button" id="import">导入备份</button>
+    </div>
+    <input type="file" id="file-import" accept=".json,application/json">
+  </section>
+  <input type="file" id="file-entry" accept="audio/*,.m4a,.mp3,.aac,.wav,.webm">
+</div>
+<div class="toast" id="toast" hidden></div>
+
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const MAX_BYTES = 50 * 1024 * 1024;
+
+  // ---- storage: IndexedDB keeps text and audio blobs in this browser ----
+  let idb = null;
+  function openDb() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open("wenan-luyinben", 1);
+      req.onupgradeneeded = () => req.result.createObjectStore("lines", { keyPath: "id" });
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+  function tx(mode, fn) {
+    return new Promise((resolve, reject) => {
+      const t = idb.transaction("lines", mode);
+      const store = t.objectStore("lines");
+      let out;
+      Promise.resolve(fn(store)).then((v) => { out = v; });
+      t.oncomplete = () => resolve(out);
+      t.onerror = () => reject(t.error);
+      t.onabort = () => reject(t.error);
+    });
+  }
+  const getAll = () => tx("readonly", (s) => new Promise((res) => { const r = s.getAll(); r.onsuccess = () => res(r.result); }));
+  const put = (line) => tx("readwrite", (s) => { s.put(line); });
+  const del = (id) => tx("readwrite", (s) => { s.delete(id); });
+
+  let entries = [];
+  let ready = false;
+  let pendingNew = null;           // {blob, type, dur}
+  let pickTarget = null;
+  let confirming = null;
+  let player = null;               // {key, audio}
+  const urls = {};                 // key -> object URL
+  let rec = null;                  // active recording
+
+  const ICON_PLAY = '<svg viewBox="0 0 14 14" aria-hidden="true"><path d="M3 1.5v11l9.5-5.5z"/></svg>';
+  const ICON_PAUSE = '<svg viewBox="0 0 14 14" aria-hidden="true"><path d="M2.5 1.5h3.2v11H2.5zM8.3 1.5h3.2v11H8.3z"/></svg>';
+
+  function toast(msg) {
+    const t = $("toast");
+    t.textContent = msg;
+    t.hidden = false;
+    clearTimeout(toast._t);
+    toast._t = setTimeout(() => { t.hidden = true; }, 3200);
+  }
+  const pad = (n) => String(n).padStart(3, "0");
+  const fmtTime = (s) => {
+    if (!isFinite(s) || s == null || s < 0) return "--:--";
+    s = Math.round(s);
+    return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+  };
+  const fmtDate = (ms) => {
+    if (!ms) return "";
+    const d = new Date(ms);
+    return d.getFullYear() + "." + String(d.getMonth() + 1).padStart(2, "0") + "." + String(d.getDate()).padStart(2, "0");
+  };
+  const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  const extFor = (type) => /mp4|m4a|aac/.test(type) ? "m4a" : /webm/.test(type) ? "webm" : /mpeg|mp3/.test(type) ? "mp3" : /wav/.test(type) ? "wav" : /ogg/.test(type) ? "ogg" : "audio";
+
+  function audioMime(file) {
+    if (file.type && /^(audio|video)\//.test(file.type)) return file.type;
+    const ext = ((file.name || "").split(".").pop() || "").toLowerCase();
+    return { m4a: "audio/mp4", mp4: "audio/mp4", aac: "audio/aac", mp3: "audio/mpeg", wav: "audio/wav", webm: "audio/webm", ogg: "audio/ogg", opus: "audio/ogg", caf: "audio/x-caf" }[ext] || "";
+  }
+  function measure(blob) {
+    return new Promise((resolve) => {
+      const a = document.createElement("audio");
+      const url = URL.createObjectURL(blob);
+      let settled = false;
+      const done = (v) => { if (settled) return; settled = true; URL.revokeObjectURL(url); resolve(v); };
+      a.preload = "metadata";
+      a.addEventListener("loadedmetadata", () => done(isFinite(a.duration) ? a.duration : null));
+      a.addEventListener("error", () => done(null));
+      setTimeout(() => done(null), 5000);
+      a.src = url;
+    });
+  }
+  async function fromFile(file) {
+    const type = audioMime(file);
+    if (!type) throw new Error("这个文件不像录音。请选 m4a、mp3 这类音频文件。");
+    if (file.size > MAX_BYTES) throw new Error("录音超过 50MB，太大了。可以分成几段。");
+    return { blob: file, type, dur: await measure(file) };
+  }
+
+  // ---- recording ----
+  function pickRecType() {
+    if (!window.MediaRecorder) return null;
+    const options = ["audio/mp4", "audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus"];
+    for (const t of options) if (MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t)) return t;
+    return "";
+  }
+  function micErrorText(e) {
+    const n = e && e.name;
+    if (!window.isSecureContext) return "这个网址不安全，浏览器不让录音。请用 https 开头的网址打开。";
+    if (n === "NotAllowedError" || n === "SecurityError") return "浏览器没允许用麦克风。点地址栏左边的小图标，把“麦克风”改成允许，再刷新页面。";
+    if (n === "NotFoundError" || n === "OverconstrainedError") return "没找到麦克风。检查一下电脑有没有接麦克风或耳机。";
+    if (n === "NotReadableError") return "麦克风正被别的软件占用，关掉它再试。";
+    return "录不了音：" + (e && e.message ? e.message : "未知原因");
+  }
+  async function startRec(target) {
+    if (rec) { stopRec(); return; }
+    const type = pickRecType();
+    if (type === null || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      toast("这个浏览器不支持录音。请用最新版的 Chrome、Edge 或 Safari。");
+      return;
+    }
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+    } catch (e) { toast(micErrorText(e)); return; }
+    if (player) player.audio.pause();
+    const mr = type ? new MediaRecorder(stream, { mimeType: type }) : new MediaRecorder(stream);
+    const chunks = [];
+    rec = { target, mr, stream, chunks, started: Date.now(), timer: null };
+    mr.addEventListener("dataavailable", (ev) => { if (ev.data && ev.data.size) chunks.push(ev.data); });
+    mr.addEventListener("stop", () => finishRec());
+    mr.start(1000);
+    rec.timer = setInterval(updateRecClock, 250);
+    render();
+  }
+  function stopRec() {
+    if (!rec) return;
+    if (rec.mr.state !== "inactive") rec.mr.stop();
+  }
+  async function finishRec() {
+    const r = rec;
+    rec = null;
+    clearInterval(r.timer);
+    r.stream.getTracks().forEach((t) => t.stop());
+    const type = (r.mr.mimeType || r.chunks[0] && r.chunks[0].type || "audio/webm").split(";")[0];
+    const blob = new Blob(r.chunks, { type });
+    const dur = (Date.now() - r.started) / 1000;
+    if (!blob.size || dur < 0.5) { toast("录得太短了，再录一次。"); render(); return; }
+    const voice = { blob, type, dur };
+    if (r.target === "new") {
+      pendingNew = voice;
+      dropUrl("new");
+      render();
+      toast("录好了，" + fmtTime(dur) + "。点“收下这条”存起来。");
+    } else {
+      await setVoice(r.target, voice);
+      toast("录音已存好");
+    }
+  }
+  function updateRecClock() {
+    if (!rec) return;
+    const el = document.querySelector(".rec.on .clock");
+    if (el) el.textContent = fmtTime((Date.now() - rec.started) / 1000);
+  }
+  // Leaving mid-recording would lose it; warn first.
+  window.addEventListener("beforeunload", (ev) => { if (rec) { ev.preventDefault(); ev.returnValue = ""; } });
+
+  function recButton(target, small) {
+    const on = rec && rec.target === target;
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "rec" + (on ? " on" : "");
+    b.disabled = !!rec && !on;
+    b.innerHTML = '<span class="dot"></span><span class="label"></span>' + (on ? ' <span class="clock">0:00</span>' : "");
+    b.querySelector(".label").textContent = on ? "停止" : (small ? "录音" : "录音");
+    b.addEventListener("click", () => on ? stopRec() : startRec(target));
+    return b;
+  }
+
+  // ---- playback ----
+  function urlFor(key, blob) {
+    if (!urls[key]) urls[key] = URL.createObjectURL(blob);
+    return urls[key];
+  }
+  function dropUrl(key) {
+    if (urls[key]) { URL.revokeObjectURL(urls[key]); delete urls[key]; }
+    if (player && player.key === key) { player.audio.pause(); player = null; }
+  }
+  function voiceEl(key, voice) {
+    const v = document.createElement("div");
+    v.className = "voice";
+    v.dataset.key = key;
+    const playing = player && player.key === key && !player.audio.paused;
+    v.innerHTML =
+      '<button type="button" class="play" aria-label="' + (playing ? "暂停" : "播放录音") + '">' + (playing ? ICON_PAUSE : ICON_PLAY) + '</button>' +
+      '<div class="track" aria-label="播放进度"><div class="fill"></div></div><span class="time"></span>';
+    v.querySelector(".time").textContent = fmtTime(voice.dur);
+    v.querySelector(".play").addEventListener("click", () => togglePlay(key, voice));
+    v.querySelector(".track").addEventListener("click", (ev) => {
+      if (!player || player.key !== key) { togglePlay(key, voice); return; }
+      const r = ev.currentTarget.getBoundingClientRect();
+      const d = isFinite(player.audio.duration) ? player.audio.duration : voice.dur;
+      if (d) player.audio.currentTime = Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width)) * d;
+    });
+    if (player && player.key === key) syncProgress(v, voice);
+    return v;
+  }
+  function syncProgress(v, voice) {
+    const a = player.audio;
+    const d = isFinite(a.duration) && a.duration ? a.duration : voice.dur;
+    v.querySelector(".fill").style.width = (d ? Math.min(100, (a.currentTime / d) * 100) : 0) + "%";
+    v.querySelector(".time").textContent = a.currentTime > 0 ? fmtTime(a.currentTime) : fmtTime(d);
+  }
+  function togglePlay(key, voice) {
+    if (player && player.key === key) {
+      if (player.audio.paused) player.audio.play().catch(() => toast("这段录音在这个浏览器里放不了"));
+      else player.audio.pause();
+      return;
+    }
+    if (player) player.audio.pause();
+    const a = new Audio(urlFor(key, voice.blob));
+    player = { key, audio: a };
+    a.addEventListener("play", render);
+    a.addEventListener("pause", render);
+    a.addEventListener("ended", () => { a.currentTime = 0; render(); });
+    a.addEventListener("timeupdate", () => {
+      const v = document.querySelector('.voice[data-key="' + key + '"]');
+      if (v) syncProgress(v, voice);
+    });
+    a.play().catch(() => { toast("这段录音在这个浏览器里放不了"); player = null; render(); });
+  }
+
+  // ---- render ----
+  function render() {
+    const withVoice = entries.filter((e) => e.voice).length;
+    $("tally").textContent = !ready ? "正在打开…" : entries.length
+      ? "已收 " + entries.length + " 条 · 其中 " + withVoice + " 条有录音"
+      : "还没有收任何一条";
+
+    // compose recorder + pending voice
+    const recNew = $("rec-new");
+    const onNew = rec && rec.target === "new";
+    recNew.className = "rec" + (onNew ? " on" : "");
+    recNew.disabled = !!rec && !onNew;
+    recNew.innerHTML = '<span class="dot"></span><span class="label">' + (onNew ? "停止" : pendingNew ? "重录" : "录音") + '</span>' + (onNew ? ' <span class="clock">0:00</span>' : "");
+    const row = $("new-voice-row");
+    row.innerHTML = "";
+    if (pendingNew && !onNew) {
+      row.appendChild(voiceEl("new", pendingNew));
+      const x = document.createElement("button");
+      x.type = "button";
+      x.textContent = "不要这段";
+      x.style.fontSize = "12px";
+      x.addEventListener("click", () => { dropUrl("new"); pendingNew = null; render(); });
+      row.appendChild(x);
+    }
+    row.hidden = !row.childNodes.length;
+
+    const list = $("list");
+    const state = $("state");
+    list.innerHTML = "";
+    if (!ready) return;
+    if (!entries.length) {
+      state.hidden = false;
+      state.textContent = "这里还是空的。在上面写下第一句，点“收下这条”。";
+      return;
+    }
+    state.hidden = true;
+    const sorted = entries.slice().sort((a, b) => (b.no || 0) - (a.no || 0));
+    for (const e of sorted) list.appendChild(renderEntry(e));
+    updateRecClock();
+  }
+
+  function renderEntry(e) {
+    const el = document.createElement("article");
+    el.className = "entry";
+    el.dataset.id = e.id;
+
+    const seal = document.createElement("div");
+    seal.className = "seal";
+    seal.textContent = pad(e.no || 0);
+    seal.setAttribute("aria-label", "第 " + (e.no || 0) + " 条");
+
+    const body = document.createElement("div");
+    body.className = "body";
+    const q = document.createElement("p");
+    q.className = "quote";
+    q.textContent = e.text || "";
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    meta.textContent = fmtDate(e.createdAt);
+    body.append(q, meta);
+
+    if (e.voice && !(rec && rec.target === e.id)) body.appendChild(voiceEl(e.id, e.voice));
+
+    const acts = document.createElement("div");
+    acts.className = "actions";
+    const recB = recButton(e.id, true);
+    if (!(rec && rec.target === e.id)) recB.querySelector(".label").textContent = e.voice ? "重录" : "录音";
+    acts.appendChild(recB);
+    const add = (label, fn) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = label;
+      b.addEventListener("click", fn);
+      acts.appendChild(b);
+    };
+    add("复制", () => copyText(e.text || ""));
+    add("选文件", () => { pickTarget = e.id; $("file-entry").value = ""; $("file-entry").click(); });
+    if (e.voice) {
+      add("下载录音", () => downloadBlob(e.voice.blob, pad(e.no) + "." + extFor(e.voice.type)));
+      add("删除录音", () => { confirming = { id: e.id, kind: "audio" }; render(); });
+    }
+    add("删除这条", () => { confirming = { id: e.id, kind: "entry" }; render(); });
+    body.appendChild(acts);
+
+    if (confirming && confirming.id === e.id) {
+      const c = document.createElement("div");
+      c.className = "confirm";
+      const msg = document.createElement("span");
+      msg.textContent = confirming.kind === "entry"
+        ? "删除第 " + pad(e.no || 0) + " 条" + (e.voice ? "和它的录音" : "") + "？删了找不回来。"
+        : "删除这段录音？文字会留着，录音找不回来。";
+      const yes = document.createElement("button");
+      yes.type = "button"; yes.className = "danger"; yes.textContent = "确定删除";
+      yes.addEventListener("click", () => confirming.kind === "entry" ? removeEntry(e) : setVoice(e.id, null));
+      const no = document.createElement("button");
+      no.type = "button"; no.textContent = "算了";
+      no.addEventListener("click", () => { confirming = null; render(); });
+      c.append(msg, yes, no);
+      body.appendChild(c);
+    }
+
+    el.append(seal, body);
+    return el;
+  }
+
+  async function copyText(text) {
+    try { await navigator.clipboard.writeText(text); toast("已复制"); }
+    catch (_) { toast("复制不了，请长按文字手动复制"); }
+  }
+  function downloadBlob(blob, name) {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  }
+
+  // ---- writes ----
+  async function reload() {
+    entries = await getAll();
+    ready = true;
+    render();
+  }
+  async function saveNew() {
+    const text = $("new-text").value.trim();
+    if (!text) { toast("先写一句话再收下"); $("new-text").focus(); return; }
+    if (rec && rec.target === "new") { toast("先点“停止”结束录音"); return; }
+    const no = entries.reduce((m, e) => Math.max(m, e.no || 0), 0) + 1;
+    try {
+      await put({ id: newId(), no, text, voice: pendingNew, createdAt: Date.now() });
+    } catch (e) { toast("没存上：浏览器的存储空间可能满了。"); return; }
+    $("new-text").value = "";
+    dropUrl("new");
+    pendingNew = null;
+    toast("已收下第 " + pad(no) + " 条");
+    await reload();
+  }
+  async function setVoice(id, voice) {
+    confirming = null;
+    const e = entries.find((x) => x.id === id);
+    if (!e) return;
+    dropUrl(id);
+    try { await put(Object.assign({}, e, { voice })); }
+    catch (_) { toast("没存上：浏览器的存储空间可能满了。"); }
+    if (!voice) toast("录音已删除");
+    await reload();
+  }
+  async function removeEntry(e) {
+    confirming = null;
+    dropUrl(e.id);
+    await del(e.id);
+    toast("第 " + pad(e.no || 0) + " 条已删除");
+    await reload();
+  }
+
+  // ---- backup ----
+  function blobToB64(blob) {
+    return new Promise((resolve) => {
+      const r = new FileReader();
+      r.onload = () => resolve(String(r.result).split(",")[1] || "");
+      r.readAsDataURL(blob);
+    });
+  }
+  async function exportAll() {
+    const out = [];
+    for (const e of entries) {
+      const row = { id: e.id, no: e.no, text: e.text, createdAt: e.createdAt, voice: null };
+      if (e.voice) row.voice = { type: e.voice.type, dur: e.voice.dur, data: await blobToB64(e.voice.blob) };
+      out.push(row);
+    }
+    const json = JSON.stringify({ app: "wenan-luyinben", version: 1, exportedAt: Date.now(), lines: out });
+    const d = new Date();
+    downloadBlob(new Blob([json], { type: "application/json" }), "文案录音本备份-" + d.getFullYear() + String(d.getMonth() + 1).padStart(2, "0") + String(d.getDate()).padStart(2, "0") + ".json");
+  }
+  async function importFile(file) {
+    let data;
+    try { data = JSON.parse(await file.text()); } catch (_) { toast("这个文件不是文案录音本的备份。"); return; }
+    if (!data || !Array.isArray(data.lines)) { toast("这个文件不是文案录音本的备份。"); return; }
+    let added = 0;
+    const have = new Set(entries.map((e) => e.id));
+    for (const r of data.lines) {
+      if (!r || !r.id || have.has(r.id)) continue;
+      let voice = null;
+      if (r.voice && r.voice.data) {
+        const bin = atob(r.voice.data);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        voice = { blob: new Blob([bytes], { type: r.voice.type }), type: r.voice.type, dur: r.voice.dur };
+      }
+      await put({ id: r.id, no: r.no, text: r.text, createdAt: r.createdAt, voice });
+      added++;
+    }
+    toast(added ? "导入了 " + added + " 条" : "备份里的文案这里都有了");
+    await reload();
+  }
+
+  // ---- wiring ----
+  $("save-new").addEventListener("click", saveNew);
+  $("rec-new").addEventListener("click", () => (rec && rec.target === "new") ? stopRec() : startRec("new"));
+  $("pick-new").addEventListener("click", () => { $("file-new").value = ""; $("file-new").click(); });
+  async function acceptNew(f) {
+    if (!f) return;
+    try { pendingNew = await fromFile(f); dropUrl("new"); render(); toast("已附上：" + f.name); }
+    catch (e) { toast(e.message); }
+  }
+  async function attachTo(id, f) {
+    if (!f) return;
+    try { await setVoice(id, await fromFile(f)); toast("录音已存好"); }
+    catch (e) { toast(e.message); }
+  }
+  $("file-new").addEventListener("change", (ev) => acceptNew(ev.target.files && ev.target.files[0]));
+  $("file-entry").addEventListener("change", (ev) => {
+    const f = ev.target.files && ev.target.files[0];
+    const id = pickTarget;
+    pickTarget = null;
+    if (f && id) attachTo(id, f);
+  });
+  $("export").addEventListener("click", () => entries.length ? exportAll() : toast("还没有可以导出的文案"));
+  $("import").addEventListener("click", () => { $("file-import").value = ""; $("file-import").click(); });
+  $("file-import").addEventListener("change", (ev) => { const f = ev.target.files && ev.target.files[0]; if (f) importFile(f); });
+
+  const hasFiles = (ev) => ev.dataTransfer && Array.from(ev.dataTransfer.types || []).includes("Files");
+  window.addEventListener("dragover", (ev) => { if (hasFiles(ev)) ev.preventDefault(); });
+  window.addEventListener("drop", (ev) => { if (hasFiles(ev)) ev.preventDefault(); });
+  const compose = $("compose");
+  compose.addEventListener("dragover", (ev) => { if (!hasFiles(ev)) return; ev.preventDefault(); compose.classList.add("dropping"); });
+  compose.addEventListener("dragleave", (ev) => { if (!compose.contains(ev.relatedTarget)) compose.classList.remove("dropping"); });
+  compose.addEventListener("drop", (ev) => { if (!hasFiles(ev)) return; ev.preventDefault(); compose.classList.remove("dropping"); acceptNew(ev.dataTransfer.files[0]); });
+  const list = $("list");
+  const clearDrop = () => list.querySelectorAll(".entry.dropping").forEach((x) => x.classList.remove("dropping"));
+  list.addEventListener("dragover", (ev) => {
+    const card = ev.target.closest && ev.target.closest(".entry");
+    if (!card || !hasFiles(ev)) return;
+    ev.preventDefault();
+    if (!card.classList.contains("dropping")) { clearDrop(); card.classList.add("dropping"); }
+  });
+  list.addEventListener("dragleave", (ev) => { if (!list.contains(ev.relatedTarget)) clearDrop(); });
+  list.addEventListener("drop", (ev) => {
+    const card = ev.target.closest && ev.target.closest(".entry");
+    clearDrop();
+    if (!card || !hasFiles(ev)) return;
+    ev.preventDefault();
+    attachTo(card.dataset.id, ev.dataTransfer.files[0]);
+  });
+
+  render();
+  (async () => {
+    try {
+      idb = await openDb();
+      if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+      await reload();
+    } catch (_) {
+      ready = true;
+      $("compose").hidden = true;
+      $("state").hidden = false;
+      $("state").textContent = "这个浏览器不能保存数据（可能开了无痕模式）。请用普通窗口打开。";
+      render();
+    }
+  })();
+})();
+</script>
+</body>
+</html>
