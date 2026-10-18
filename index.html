@@ -266,7 +266,7 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
   const MAX_BYTES = 15 * 1024 * 1024;
 
   // ---- cloud storage: server/worker.js keeps the shared notebook in a private GitHub repo ----
-  const API = (window.WENAN_API || "WORKER_URL").replace(/\/+$/, "");
+  const API = (window.WENAN_API || "https://wenan-luyinben.patrick-f78.workers.dev").replace(/\/+$/, "");
   const audioUrl = (voice) => API + "/api/audio/" + voice.file;
   let adminKey = "";
   try { adminKey = localStorage.getItem("admin-key") || ""; } catch (_) {}
