@@ -17,21 +17,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: List the server's secrets
-        id: secrets
-        if: env.HAS_CF == 'true'
-        continue-on-error: true
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          wranglerVersion: "4.147.0"
-          workingDirectory: server
-          command: secret list
-
       - name: Check the site and the server
         env:
-          SECRETS_OUT: ${{ steps.secrets.outputs.command-output }}
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           SITE: https://patrick-infinexus.github.io/wenan-luyinben/
           API: https://wenan-luyinben.patrick-f78.workers.dev
         run: |
@@ -89,15 +78,24 @@ jobs:
           else:
               note("error", "语音识别", f"语音识别出错（HTTP {status}）：{body[:200].decode('utf-8', 'replace')}")
 
-          out = os.environ.get("SECRETS_OUT", "")
-          # Secret names only; wrangler never prints values.
-          print("::notice title=secret list 原始输出::" + (out[-400:].replace("\n", " ") if out else "(空)"))
-          if out:
-              names = sorted(set(re.findall(r'"name":\s*"([A-Z_]+)"', out)))
-              note("notice", "服务器密钥", "Cloudflare 里已设置的 Secret：" + ("、".join(names) or "（没有）"))
-              for need in ("GITHUB_TOKEN", "ADMIN_KEY"):
-                  if need not in names:
-                      note("error", "服务器密钥", f"缺少 Secret：{need}")
+          # The Worker's settings: only each binding's name and type are read, never a value.
+          token, account = os.environ.get("CF_TOKEN"), os.environ.get("CF_ACCOUNT")
+          if token and account:
+              req = urllib.request.Request(
+                  f"https://api.cloudflare.com/client/v4/accounts/{account}/workers/scripts/wenan-luyinben/settings",
+                  headers={"Authorization": "Bearer " + token, "User-Agent": "site-check"})
+              try:
+                  with urllib.request.urlopen(req, timeout=60) as r:
+                      bindings = json.loads(r.read())["result"].get("bindings", [])
+                  kinds = {b["name"]: b["type"] for b in bindings}
+                  note("notice", "服务器设置", "、".join(f"{n}（{t}）" for n, t in sorted(kinds.items())) or "（没有）")
+                  for need in ("GITHUB_TOKEN", "ADMIN_KEY"):
+                      if need not in kinds:
+                          note("error", "服务器设置", f"缺少 {need}")
+                      elif kinds[need] != "secret_text":
+                          note("warning", "服务器设置", f"{need} 是文本类型，建议删掉后用 Secret 类型重新添加")
+              except Exception as e:
+                  note("warning", "服务器设置", f"读不到 Cloudflare 设置：{e}")
 
           raise SystemExit(1 if problems else 0)
           EOF
