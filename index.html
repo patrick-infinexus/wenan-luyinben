@@ -170,6 +170,16 @@ input[type="file"] { display: none; }
 .confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; color: var(--zhu); background: var(--zhu-wash); padding: 8px 12px; border-radius: 6px; }
 .state { color: var(--ink-soft); padding-block: 24px; }
 
+.switch { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink-soft); cursor: pointer; }
+.switch input { accent-color: var(--dai); width: 16px; height: 16px; margin: 0; }
+.status { font-size: 13px; color: var(--dai); background: var(--dai-wash); padding: 8px 12px; border-radius: 6px; overflow-wrap: anywhere; }
+.status.warn { color: var(--zhu); background: var(--zhu-wash); }
+.status button { font-size: 12px; padding: 3px 10px; margin-left: 6px; }
+.heard { font-size: 14px; line-height: 1.7; color: var(--ink-soft); margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.heard .k { font-size: 12px; letter-spacing: 0.08em; margin-right: 6px; }
+.heard.live { color: var(--dai); }
+textarea[readonly] { color: var(--dai); }
+
 .backup { display: flex; flex-direction: column; gap: 10px; font-size: 13px; color: var(--ink-soft); }
 .backup .row button { font-size: 13px; }
 .compose.dropping, .entry.dropping { outline: 2px dashed var(--dai); outline-offset: 4px; background: var(--dai-wash); }
@@ -200,13 +210,17 @@ input[type="file"] { display: none; }
     <textarea id="new-text" placeholder="把一句话写在这里"></textarea>
     <div class="row" id="new-voice-row"></div>
     <div class="row">
+      <label class="switch" for="live-toggle"><input type="checkbox" id="live-toggle" checked> 边说边转文字</label>
+    </div>
+    <div class="row">
       <button type="button" class="rec" id="rec-new"><span class="dot"></span><span class="label">录音</span></button>
       <button type="button" id="pick-new">选录音文件</button>
       <span class="spacer"></span>
       <button type="button" class="primary" id="save-new">收下这条</button>
     </div>
+    <div class="status" id="status" hidden></div>
     <input type="file" id="file-new" accept="audio/*,.m4a,.mp3,.aac,.wav,.webm">
-    <div class="tip">点“录音”开始，再点一下停止。第一次用时浏览器会问能不能用麦克风，选“允许”。也可以把录好的音频文件拖到这个框里。</div>
+    <div class="tip">点“录音”开始，再点一下停止。说的话会自动变成文字填进上面的框里，可以再改。第一次用时浏览器会问能不能用麦克风，选“允许”。也可以把录好的音频文件拖到这个框里。</div>
   </section>
 
   <section class="list" id="list" aria-label="已收的文案"></section>
@@ -224,6 +238,7 @@ input[type="file"] { display: none; }
 </div>
 <div class="toast" id="toast" hidden></div>
 
+<script src="https://cdn.jsdelivr.net/npm/opencc-js@1.0.5/dist/umd/t2cn.js"></script>
 <script>
 (function () {
   const $ = (id) => document.getElementById(id);
@@ -312,6 +327,194 @@ input[type="file"] { display: none; }
     return { blob: file, type, dur: await measure(file) };
   }
 
+  // ---- transcription ----
+  // Live: the browser's own speech recognition while recording.
+  // Fallback: Whisper running locally in whisper-worker.js; the model is downloaded once.
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const toSimplified = (() => {
+    try { return window.OpenCC ? OpenCC.Converter({ from: "tw", to: "cn" }) : (s) => s; } catch (_) { return (s) => s; }
+  })();
+  let live = null;
+  let liveText = "";
+  const busyText = {};
+  let whisperOk = false;
+  try { whisperOk = localStorage.getItem("whisper-ready") === "1"; } catch (_) {}
+  try { if (localStorage.getItem("live-on") === "0") $("live-toggle").checked = false; } catch (_) {}
+  $("live-toggle").addEventListener("change", () => {
+    try { localStorage.setItem("live-on", $("live-toggle").checked ? "1" : "0"); } catch (_) {}
+  });
+  const liveOn = () => $("live-toggle").checked;
+
+  function setStatus(text, warn, action) {
+    const s = $("status");
+    s.innerHTML = "";
+    if (!text) { s.hidden = true; return; }
+    s.hidden = false;
+    s.className = "status" + (warn ? " warn" : "");
+    s.appendChild(document.createTextNode(text));
+    if (action) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = action.label;
+      b.addEventListener("click", action.fn);
+      s.appendChild(b);
+    }
+  }
+
+  const SR_ERRORS = {
+    "network": "实时转文字连不上语音服务（Chrome 的识别要连谷歌的服务器）。",
+    "not-allowed": "浏览器没允许语音识别。",
+    "service-not-allowed": "这个浏览器不让网页用语音识别。",
+    "language-not-supported": "这个浏览器的语音识别不支持中文。",
+    "audio-capture": "语音识别拿不到麦克风。",
+  };
+
+  function startLive(target, onText) {
+    live = null;
+    if (!SR || !liveOn()) return;
+    const L = { target, committed: "", session: "", stopping: false, failed: null, done: null, rec: null };
+    const begin = () => {
+      const r = new SR();
+      L.rec = r;
+      r.lang = "zh-CN";
+      r.continuous = true;
+      r.interimResults = true;
+      r.onresult = (ev) => {
+        let s = "";
+        for (let i = 0; i < ev.results.length; i++) s += ev.results[i][0].transcript;
+        L.session = s;
+        onText(toSimplified(L.committed + L.session));
+      };
+      r.onerror = (ev) => {
+        if (ev.error === "no-speech" || ev.error === "aborted") return;
+        L.failed = ev.error || "unknown";
+      };
+      // Browsers end a recognition session after a pause; keep listening until the recording stops.
+      r.onend = () => {
+        L.committed += L.session;
+        L.session = "";
+        if (!L.stopping && !L.failed && live === L) {
+          try { begin(); } catch (_) { L.failed = "restart"; }
+          return;
+        }
+        if (L.failed && !L.stopping && target === "new") setStatus((SR_ERRORS[L.failed] || "实时转文字中断了。") + "录音照常进行。", true);
+        if (L.done) L.done();
+      };
+      r.start();
+    };
+    try { begin(); live = L; } catch (_) { live = null; }
+  }
+
+  function stopLive() {
+    const L = live;
+    live = null;
+    if (!L) return Promise.resolve(null);
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        resolve({ text: toSimplified((L.committed + L.session).trim()), failed: L.failed });
+      };
+      setTimeout(finish, 2000);
+      L.done = finish;
+      L.stopping = true;
+      try { L.rec.stop(); } catch (_) { finish(); }
+    });
+  }
+
+  let worker = null;
+  const jobs = {};
+  function whisperWorker() {
+    if (worker) return worker;
+    worker = new Worker("whisper-worker.js", { type: "module" });
+    worker.onmessage = (ev) => {
+      const m = ev.data;
+      if (m.type === "loading") setStatus("正在准备转写模型…");
+      else if (m.type === "progress") setStatus("正在下载转写模型 " + (m.total ? Math.round((m.loaded / m.total) * 100) : 0) + "%（只需下载这一次，约 80MB）");
+      else if (m.type === "ready") { whisperOk = true; try { localStorage.setItem("whisper-ready", "1"); } catch (_) {} }
+      else if (m.type === "working") setStatus("正在把录音转成文字…");
+      else if (m.type === "done" || m.type === "error") {
+        const j = jobs[m.id];
+        delete jobs[m.id];
+        if (!Object.keys(jobs).length) setStatus(null);
+        if (j) { if (m.type === "done") j.resolve(toSimplified(m.text)); else j.reject(new Error(m.message)); }
+      }
+    };
+    worker.onerror = (e) => {
+      for (const id in jobs) { jobs[id].reject(new Error(e.message || "转写模型加载失败")); delete jobs[id]; }
+      try { worker.terminate(); } catch (_) {}
+      worker = null;
+    };
+    return worker;
+  }
+  async function to16k(blob) {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    const ac = new AC();
+    const buf = await blob.arrayBuffer();
+    const decoded = await new Promise((res, rej) => ac.decodeAudioData(buf, res, rej));
+    if (ac.close) ac.close();
+    const off = new OfflineAudioContext(1, Math.max(1, Math.ceil(decoded.duration * 16000)), 16000);
+    const src = off.createBufferSource();
+    src.buffer = decoded;
+    src.connect(off.destination);
+    src.start();
+    return (await off.startRendering()).getChannelData(0);
+  }
+  async function transcribe(blob) {
+    let audio;
+    try { audio = await to16k(blob); } catch (_) { throw new Error("这段录音解不开"); }
+    const id = newId();
+    return new Promise((resolve, reject) => {
+      jobs[id] = { resolve, reject };
+      try { whisperWorker().postMessage({ id, audio }, [audio.buffer]); }
+      catch (e) { delete jobs[id]; reject(e); }
+    });
+  }
+  function friendly(e) {
+    const m = String(e && e.message || e);
+    if (/fetch|network|load|import|404|Failed/i.test(m)) return "下载转写模型时连不上网，换个网络再试。";
+    return m;
+  }
+  async function transcribeNew() {
+    if (!pendingNew) return;
+    const voice = pendingNew;
+    setStatus("正在把录音转成文字…");
+    try {
+      const text = await transcribe(voice.blob);
+      setStatus(null);
+      if (!text) { setStatus("这段录音里没听出文字。", true); return; }
+      voice.text = text;
+      const ta = $("new-text");
+      ta.value = (ta.value.trim() ? ta.value.trim() + "\n" : "") + text;
+      render();
+      toast("已转成文字，填进框里了");
+    } catch (e) {
+      setStatus("转文字没成功：" + friendly(e), true, { label: "再试一次", fn: transcribeNew });
+    }
+  }
+  async function transcribeEntry(id) {
+    const e = entries.find((x) => x.id === id);
+    if (!e || !e.voice || busyText[id]) return;
+    busyText[id] = "正在转文字…";
+    render();
+    try {
+      const text = await transcribe(e.voice.blob);
+      const cur = entries.find((x) => x.id === id);
+      if (cur && cur.voice) await put(Object.assign({}, cur, { voice: Object.assign({}, cur.voice, { text: text || "" }) }));
+      toast(text ? "已转成文字" : "这段录音里没听出文字");
+    } catch (err) {
+      setStatus(null);
+      toast("转文字没成功：" + friendly(err));
+    }
+    delete busyText[id];
+    await reload();
+  }
+  function offerNew() {
+    if (whisperOk) { transcribeNew(); return; }
+    setStatus("这段录音还没转成文字。可以用本地模型转（第一次要下载约 80MB，之后不用网也能转）。", true, { label: "转文字", fn: transcribeNew });
+  }
+
   // ---- recording ----
   function pickRecType() {
     if (!window.MediaRecorder) return null;
@@ -341,35 +544,59 @@ input[type="file"] { display: none; }
     if (player) player.audio.pause();
     const mr = type ? new MediaRecorder(stream, { mimeType: type }) : new MediaRecorder(stream);
     const chunks = [];
-    rec = { target, mr, stream, chunks, started: Date.now(), timer: null };
+    rec = { target, mr, stream, chunks, started: Date.now(), timer: null, stopping: false, liveResult: null };
     mr.addEventListener("dataavailable", (ev) => { if (ev.data && ev.data.size) chunks.push(ev.data); });
     mr.addEventListener("stop", () => finishRec());
     mr.start(1000);
     rec.timer = setInterval(updateRecClock, 250);
+
+    if (target === "new") {
+      const ta = $("new-text");
+      const base = ta.value.trim() ? ta.value.trim() + "\n" : "";
+      setStatus(null);
+      if (liveOn() && SR) { ta.readOnly = true; setStatus("正在听，说完点“停止”。"); }
+      else if (liveOn()) setStatus("这个浏览器不能边说边转文字（Chrome、Edge、Safari 可以）。录完可以用本地模型转。", true);
+      startLive(target, (t) => { ta.value = base + t; });
+    } else {
+      liveText = "";
+      startLive(target, (t) => {
+        liveText = t;
+        const el = document.querySelector('.entry[data-id="' + target + '"] .heard.live .v');
+        if (el) el.textContent = t || "…";
+      });
+    }
     render();
   }
-  function stopRec() {
-    if (!rec) return;
-    if (rec.mr.state !== "inactive") rec.mr.stop();
+  async function stopRec() {
+    if (!rec || rec.stopping) return;
+    const r = rec;
+    r.stopping = true;
+    r.liveResult = await stopLive();
+    if (r.mr.state !== "inactive") r.mr.stop();
   }
   async function finishRec() {
     const r = rec;
     rec = null;
     clearInterval(r.timer);
     r.stream.getTracks().forEach((t) => t.stop());
+    if (live) await stopLive();
+    $("new-text").readOnly = false;
     const type = (r.mr.mimeType || r.chunks[0] && r.chunks[0].type || "audio/webm").split(";")[0];
     const blob = new Blob(r.chunks, { type });
     const dur = (Date.now() - r.started) / 1000;
-    if (!blob.size || dur < 0.5) { toast("录得太短了，再录一次。"); render(); return; }
-    const voice = { blob, type, dur };
+    if (!blob.size || dur < 0.5) { setStatus(null); toast("录得太短了，再录一次。"); render(); return; }
+    const voice = { blob, type, dur, text: (r.liveResult && r.liveResult.text) || "" };
+    const needText = liveOn() && !voice.text && dur >= 1;
     if (r.target === "new") {
       pendingNew = voice;
       dropUrl("new");
       render();
-      toast("录好了，" + fmtTime(dur) + "。点“收下这条”存起来。");
+      if (needText) offerNew();
+      else { setStatus(null); toast("录好了，" + fmtTime(dur) + "。点“收下这条”存起来。"); }
     } else {
       await setVoice(r.target, voice);
-      toast("录音已存好");
+      if (needText && whisperOk) transcribeEntry(r.target);
+      else toast(needText ? "录音已存好。点这条下面的“转文字”可以把它变成文字。" : "录音已存好");
     }
   }
   function updateRecClock() {
@@ -380,14 +607,14 @@ input[type="file"] { display: none; }
   // Leaving mid-recording would lose it; warn first.
   window.addEventListener("beforeunload", (ev) => { if (rec) { ev.preventDefault(); ev.returnValue = ""; } });
 
-  function recButton(target, small) {
+  function recButton(target) {
     const on = rec && rec.target === target;
     const b = document.createElement("button");
     b.type = "button";
     b.className = "rec" + (on ? " on" : "");
     b.disabled = !!rec && !on;
     b.innerHTML = '<span class="dot"></span><span class="label"></span>' + (on ? ' <span class="clock">0:00</span>' : "");
-    b.querySelector(".label").textContent = on ? "停止" : (small ? "录音" : "录音");
+    b.querySelector(".label").textContent = on ? "停止" : "录音";
     b.addEventListener("click", () => on ? stopRec() : startRec(target));
     return b;
   }
@@ -466,8 +693,16 @@ input[type="file"] { display: none; }
       x.type = "button";
       x.textContent = "不要这段";
       x.style.fontSize = "12px";
-      x.addEventListener("click", () => { dropUrl("new"); pendingNew = null; render(); });
+      x.addEventListener("click", () => { dropUrl("new"); pendingNew = null; setStatus(null); render(); });
       row.appendChild(x);
+      if (!pendingNew.text) {
+        const t = document.createElement("button");
+        t.type = "button";
+        t.textContent = "转文字";
+        t.style.fontSize = "12px";
+        t.addEventListener("click", transcribeNew);
+        row.appendChild(t);
+      }
     }
     row.hidden = !row.childNodes.length;
 
@@ -506,11 +741,23 @@ input[type="file"] { display: none; }
     meta.textContent = fmtDate(e.createdAt);
     body.append(q, meta);
 
-    if (e.voice && !(rec && rec.target === e.id)) body.appendChild(voiceEl(e.id, e.voice));
+    const recording = rec && rec.target === e.id;
+    if (e.voice && !recording) body.appendChild(voiceEl(e.id, e.voice));
+    const heard = (label, text, isLive) => {
+      const h = document.createElement("p");
+      h.className = "heard" + (isLive ? " live" : "");
+      h.innerHTML = '<span class="k"></span><span class="v"></span>';
+      h.querySelector(".k").textContent = label;
+      h.querySelector(".v").textContent = text;
+      body.appendChild(h);
+    };
+    if (recording && live) heard("正在听", liveText || "…", true);
+    else if (busyText[e.id]) heard(busyText[e.id], "", true);
+    else if (e.voice && e.voice.text && e.voice.text.trim() !== (e.text || "").trim()) heard("录音文字", e.voice.text, false);
 
     const acts = document.createElement("div");
     acts.className = "actions";
-    const recB = recButton(e.id, true);
+    const recB = recButton(e.id);
     if (!(rec && rec.target === e.id)) recB.querySelector(".label").textContent = e.voice ? "重录" : "录音";
     acts.appendChild(recB);
     const add = (label, fn) => {
@@ -522,6 +769,7 @@ input[type="file"] { display: none; }
     };
     add("复制", () => copyText(e.text || ""));
     add("选文件", () => { pickTarget = e.id; $("file-entry").value = ""; $("file-entry").click(); });
+    if (e.voice && !e.voice.text && !busyText[e.id]) add("转文字", () => transcribeEntry(e.id));
     if (e.voice) {
       add("下载录音", () => downloadBlob(e.voice.blob, pad(e.no) + "." + extFor(e.voice.type)));
       add("删除录音", () => { confirming = { id: e.id, kind: "audio" }; render(); });
@@ -613,7 +861,7 @@ input[type="file"] { display: none; }
     const out = [];
     for (const e of entries) {
       const row = { id: e.id, no: e.no, text: e.text, createdAt: e.createdAt, voice: null };
-      if (e.voice) row.voice = { type: e.voice.type, dur: e.voice.dur, data: await blobToB64(e.voice.blob) };
+      if (e.voice) row.voice = { type: e.voice.type, dur: e.voice.dur, text: e.voice.text || "", data: await blobToB64(e.voice.blob) };
       out.push(row);
     }
     const json = JSON.stringify({ app: "wenan-luyinben", version: 1, exportedAt: Date.now(), lines: out });
@@ -633,7 +881,7 @@ input[type="file"] { display: none; }
         const bin = atob(r.voice.data);
         const bytes = new Uint8Array(bin.length);
         for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-        voice = { blob: new Blob([bytes], { type: r.voice.type }), type: r.voice.type, dur: r.voice.dur };
+        voice = { blob: new Blob([bytes], { type: r.voice.type }), type: r.voice.type, dur: r.voice.dur, text: r.voice.text || "" };
       }
       await put({ id: r.id, no: r.no, text: r.text, createdAt: r.createdAt, voice });
       added++;
@@ -649,12 +897,14 @@ input[type="file"] { display: none; }
   async function acceptNew(f) {
     if (!f) return;
     try { pendingNew = await fromFile(f); dropUrl("new"); render(); toast("已附上：" + f.name); }
-    catch (e) { toast(e.message); }
+    catch (e) { toast(e.message); return; }
+    if (liveOn()) offerNew();
   }
   async function attachTo(id, f) {
     if (!f) return;
     try { await setVoice(id, await fromFile(f)); toast("录音已存好"); }
-    catch (e) { toast(e.message); }
+    catch (e) { toast(e.message); return; }
+    if (liveOn() && whisperOk) transcribeEntry(id);
   }
   $("file-new").addEventListener("change", (ev) => acceptNew(ev.target.files && ev.target.files[0]));
   $("file-entry").addEventListener("change", (ev) => {
