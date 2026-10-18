@@ -90,6 +90,8 @@ jobs:
               note("error", "语音识别", f"语音识别出错（HTTP {status}）：{body[:200].decode('utf-8', 'replace')}")
 
           out = os.environ.get("SECRETS_OUT", "")
+          # Secret names only; wrangler never prints values.
+          print("::notice title=secret list 原始输出::" + (out[-400:].replace("\n", " ") if out else "(空)"))
           if out:
               names = sorted(set(re.findall(r'"name":\s*"([A-Z_]+)"', out)))
               note("notice", "服务器密钥", "Cloudflare 里已设置的 Secret：" + ("、".join(names) or "（没有）"))
