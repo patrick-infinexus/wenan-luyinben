@@ -190,7 +190,18 @@ textarea[readonly] { color: var(--dai); }
 
 .field { font-family: var(--font-ui); font-size: 14px; color: var(--ink); background: transparent; border: 1px solid var(--rule); border-radius: 6px; padding: 6px 10px; min-width: 0; }
 .field:focus { outline: 2px solid var(--dai); outline-offset: 1px; border-color: transparent; }
-#author { max-width: 320px; }
+#author { max-width: 320px; width: 100%; }
+.field.invalid { border-color: var(--zhu); background: var(--zhu-wash); }
+.cats { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { font-size: 13px; padding: 4px 12px; color: var(--ink-soft); }
+.chip .n { font-family: var(--font-num); font-size: 11px; margin-left: 4px; opacity: 0.8; }
+.chip[aria-pressed="true"], .chip[aria-checked="true"] { background: var(--dai); border-color: var(--dai); color: var(--sheet); }
+.chip[aria-pressed="true"]:hover, .chip[aria-checked="true"]:hover { color: var(--sheet); }
+.filters { display: flex; flex-direction: column; gap: 10px; }
+.who { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink-soft); }
+.who select, .edit-cat { font-family: var(--font-ui); font-size: 13px; color: var(--ink); background: var(--sheet); border: 1px solid var(--rule); border-radius: 6px; padding: 4px 6px; max-width: 100%; }
+.meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.tag { font-size: 12px; line-height: 1.6; padding: 0 8px; border-radius: 999px; background: var(--dai-wash); color: var(--dai); }
 textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6px; padding: 8px 10px; }
 
 .backup { display: flex; flex-direction: column; gap: 10px; font-size: 13px; color: var(--ink-soft); }
@@ -220,7 +231,8 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
 
   <section class="compose" id="compose" aria-label="新收一条">
     <label class="lbl" for="new-text">新收一条</label>
-    <input type="text" class="field" id="author" maxlength="40" placeholder="你的名字（选填，会显示在这条下面）" autocomplete="nickname">
+    <input type="text" class="field" id="author" maxlength="40" placeholder="你的名字（必填，会显示在这条下面）" autocomplete="nickname" aria-label="你的名字" required>
+    <div class="cats" id="new-cats" role="radiogroup" aria-label="分类"></div>
     <textarea id="new-text" placeholder="把一句话写在这里"></textarea>
     <div class="row" id="new-voice-row"></div>
     <div class="row">
@@ -238,6 +250,11 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
     <div class="tip">点“录音”开始，再点一下停止。录完会自动转成文字填进上面的框里，可以再改。第一次用时浏览器会问能不能用麦克风，选“允许”。也可以把录好的音频文件拖到这个框里。</div>
   </section>
 
+  <nav class="filters" aria-label="筛选">
+    <div class="cats" id="filter-cats"></div>
+    <label class="who" for="filter-author" id="filter-author-wrap" hidden>谁录的 <select id="filter-author"></select></label>
+  </nav>
+
   <section class="list" id="list" aria-label="已收的文案"></section>
   <div class="state" id="state" hidden></div>
 
@@ -253,6 +270,11 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
       <button type="submit">进入管理</button>
     </form>
     <div class="row" id="admin-state" hidden>已进入管理模式，可以编辑、重录和删除。<button type="button" id="admin-exit">退出管理</button></div>
+    <form class="row" id="cat-form" hidden>
+      <label for="cat-input">分类（用逗号隔开）</label>
+      <input type="text" class="field" id="cat-input" style="flex: 1; min-width: 200px">
+      <button type="submit">保存分类</button>
+    </form>
     <input type="file" id="file-import" accept=".json,application/json">
   </section>
   <input type="file" id="file-entry" accept="audio/*,.m4a,.mp3,.aac,.wav,.webm">
@@ -296,6 +318,16 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
   let loadError = null;
   let editing = null;              // id of the line being edited
   let editDraft = "";
+  let editCat = "";
+  const DEFAULT_CATS = ["文案", "工作", "生活复盘", "读书笔记", "其他"];
+  let categories = DEFAULT_CATS;
+  const pref = (k) => { try { return localStorage.getItem(k) || ""; } catch (_) { return ""; } };
+  const setPref = (k, v) => { try { localStorage.setItem(k, v); } catch (_) {} };
+  let filterCat = pref("filter-cat");
+  let filterAuthor = pref("filter-author");
+  let newCat = pref("new-cat");
+  // Lines saved before categories existed were all copywriting.
+  const catOf = (e) => e.category || categories[0] || DEFAULT_CATS[0];
   let pendingNew = null;           // {blob, type, dur}
   let pickTarget = null;
   let confirming = null;
@@ -883,10 +915,20 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
     }
     row.hidden = !row.childNodes.length;
 
+    renderCats();
+
     const list = $("list");
     const state = $("state");
     list.innerHTML = "";
     if (!ready) return;
+    const shown = entries.filter((e) => (!filterCat || catOf(e) === filterCat) && (!filterAuthor || (e.author || "") === filterAuthor));
+    if (entries.length && !shown.length) {
+      state.hidden = false;
+      state.innerHTML = "";
+      state.textContent = filterAuthor && filterCat ? filterAuthor + "在“" + filterCat + "”里还没录过内容。"
+        : filterAuthor ? filterAuthor + "还没录过内容。" : "“" + filterCat + "”里还没有内容。";
+      return;
+    }
     if (!entries.length) {
       state.hidden = false;
       state.innerHTML = "";
@@ -901,9 +943,56 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
       return;
     }
     state.hidden = true;
-    const sorted = entries.slice().sort((a, b) => (b.no || 0) - (a.no || 0));
+    const sorted = shown.slice().sort((a, b) => (b.no || 0) - (a.no || 0));
     for (const e of sorted) list.appendChild(renderEntry(e));
     updateRecClock();
+  }
+
+  function chip(label, on, onClick, count, role) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "chip";
+    if (role === "radio") { b.setAttribute("role", "radio"); b.setAttribute("aria-checked", on ? "true" : "false"); }
+    else b.setAttribute("aria-pressed", on ? "true" : "false");
+    b.textContent = label;
+    if (count !== undefined) {
+      const n = document.createElement("span");
+      n.className = "n";
+      n.textContent = count;
+      b.appendChild(n);
+    }
+    b.addEventListener("click", onClick);
+    return b;
+  }
+  function renderCats() {
+    if (!categories.includes(newCat)) newCat = categories[0];
+    const nc = $("new-cats");
+    nc.innerHTML = "";
+    for (const c of categories) nc.appendChild(chip(c, c === newCat, () => { newCat = c; setPref("new-cat", c); render(); }, undefined, "radio"));
+
+    // Filter by every category in use, including ones the owner has since removed.
+    const all = categories.slice();
+    for (const e of entries) if (!all.includes(catOf(e))) all.push(catOf(e));
+    if (filterCat && !all.includes(filterCat)) filterCat = "";
+    const fc = $("filter-cats");
+    fc.innerHTML = "";
+    const pick = (c) => { filterCat = c; setPref("filter-cat", c); render(); };
+    fc.appendChild(chip("全部", !filterCat, () => pick(""), entries.length));
+    for (const c of all) fc.appendChild(chip(c, filterCat === c, () => pick(c), entries.filter((e) => catOf(e) === c).length));
+    fc.hidden = !entries.length;
+
+    const authors = [...new Set(entries.map((e) => e.author || "").filter(Boolean))].sort((a, b) => a.localeCompare(b, "zh"));
+    if (filterAuthor && !authors.includes(filterAuthor)) filterAuthor = "";
+    const sel = $("filter-author");
+    sel.innerHTML = "";
+    for (const a of ["", ...authors]) {
+      const o = document.createElement("option");
+      o.value = a;
+      o.textContent = a || "所有人";
+      sel.appendChild(o);
+    }
+    sel.value = filterAuthor;
+    $("filter-author-wrap").hidden = authors.length < 2;
   }
 
   function renderEntry(e) {
@@ -926,6 +1015,15 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
       ta.addEventListener("input", () => { editDraft = ta.value; });
       const r = document.createElement("div");
       r.className = "row";
+      const cs = document.createElement("select");
+      cs.className = "edit-cat";
+      cs.id = "edit-cat-" + e.id;
+      cs.setAttribute("aria-label", "分类");
+      const opts = categories.includes(editCat) ? categories : [...categories, editCat];
+      for (const c of opts) { const o = document.createElement("option"); o.value = c; o.textContent = c; cs.appendChild(o); }
+      cs.value = editCat;
+      cs.addEventListener("change", () => { editCat = cs.value; });
+      r.appendChild(cs);
       const save = document.createElement("button");
       save.type = "button"; save.className = "primary"; save.textContent = "保存修改";
       save.addEventListener("click", () => saveEdit(e));
@@ -942,7 +1040,12 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
     }
     const meta = document.createElement("div");
     meta.className = "meta";
-    meta.textContent = fmtDate(e.createdAt) + (e.author ? " · " + e.author : "");
+    const tag = document.createElement("span");
+    tag.className = "tag";
+    tag.textContent = catOf(e);
+    const when = document.createElement("span");
+    when.textContent = fmtDate(e.createdAt) + (e.author ? " · " + e.author : "");
+    meta.append(tag, when);
     body.appendChild(meta);
 
     const recording = rec && rec.target === e.id;
@@ -972,7 +1075,7 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
     add("复制", () => copyText(e.text || ""));
     if (e.voice) add("下载录音", () => downloadVoice(e));
     if (isAdmin) {
-      if (editing !== e.id) add("编辑", () => { editing = e.id; editDraft = e.text || ""; render(); const t = $("edit-" + e.id); if (t) t.focus(); });
+      if (editing !== e.id) add("编辑", () => { editing = e.id; editDraft = e.text || ""; editCat = catOf(e); render(); const t = $("edit-" + e.id); if (t) t.focus(); });
       const recB = recButton(e.id);
       if (!recording) recB.querySelector(".label").textContent = e.voice ? "重录" : "录音";
       if (busyText[e.id]) recB.disabled = true;
@@ -1027,6 +1130,7 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
     try {
       const data = await api("/api/lines", { admin: false });
       entries = data.lines || [];
+      if (Array.isArray(data.categories) && data.categories.length) categories = data.categories;
       loadError = null;
     } catch (e) {
       loadError = e.message;
@@ -1038,6 +1142,13 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
     return { type: voice.type, dur: voice.dur, text: voice.text || "", data: await blobToB64(voice.blob) };
   }
   async function saveNew() {
+    const author = $("author").value.trim();
+    if (!author) {
+      $("author").classList.add("invalid");
+      $("author").focus();
+      toast("先填上你的名字，大家才知道这条是谁录的");
+      return;
+    }
     const text = $("new-text").value.trim();
     if (!text) { toast("先写一句话再收下"); $("new-text").focus(); return; }
     if (rec && rec.target === "new") { toast("先点“停止”结束录音"); return; }
@@ -1045,7 +1156,8 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
     btn.disabled = true;
     btn.textContent = pendingNew ? "正在上传录音…" : "正在保存…";
     try {
-      const body = { text, author: $("author").value.trim(), voice: pendingNew ? await voicePayload(pendingNew) : null };
+      setPref("author", author);
+      const body = { text, author, category: newCat || categories[0], voice: pendingNew ? await voicePayload(pendingNew) : null };
       const { line } = await api("/api/lines", { method: "POST", body, admin: false });
       $("new-text").value = "";
       dropUrl("new");
@@ -1078,7 +1190,7 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
     busyText[e.id] = "正在保存修改…";
     render();
     try {
-      await api("/api/lines/" + e.id, { method: "PATCH", body: { text } });
+      await api("/api/lines/" + e.id, { method: "PATCH", body: { text, category: editCat } });
       editing = null;
       toast("第 " + pad(e.no || 0) + " 条已修改");
     } catch (err) { toast("没改成：" + err.message); }
@@ -1116,7 +1228,7 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
       let i = 0;
       for (const e of entries) {
         btn.textContent = "正在打包 " + (++i) + "/" + entries.length;
-        const row = { id: e.id, no: e.no, text: e.text, author: e.author || "", createdAt: e.createdAt, voice: null };
+        const row = { id: e.id, no: e.no, text: e.text, author: e.author || "", category: catOf(e), createdAt: e.createdAt, voice: null };
         if (e.voice) row.voice = { type: e.voice.type, dur: e.voice.dur, text: e.voice.text || "", data: await blobToB64(await voiceBlob(e.voice)) };
         out.push(row);
       }
@@ -1143,7 +1255,7 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
       btn.textContent = "正在导入 " + (added + 1) + "/" + todo.length;
       try {
         await api("/api/lines", { method: "POST", body: {
-          id: r.id, no: r.no, text: r.text, author: r.author || "", createdAt: r.createdAt,
+          id: r.id, no: r.no, text: r.text, author: r.author || "", category: r.category || "", createdAt: r.createdAt,
           voice: r.voice && r.voice.data ? { type: r.voice.type, dur: r.voice.dur, text: r.voice.text || "", data: r.voice.data } : null,
         } });
         added++;
@@ -1163,7 +1275,8 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
     $("admin-state").hidden = !isAdmin;
     $("admin-toggle").hidden = isAdmin;
     $("import").hidden = !isAdmin;
-    if (isAdmin) $("admin-form").hidden = true;
+    $("cat-form").hidden = !isAdmin;
+    if (isAdmin) { $("admin-form").hidden = true; $("cat-input").value = categories.join("，"); }
   }
   async function checkAdmin(announce) {
     if (!adminKey) { isAdmin = false; renderAdmin(); render(); return; }
@@ -1205,12 +1318,26 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
     toast("已退出管理模式");
   });
 
+  $("cat-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const list = $("cat-input").value.split(/[，,、;；\n]+/).map((c) => c.trim()).filter(Boolean);
+    try {
+      const res = await api("/api/categories", { method: "PUT", body: { categories: list } });
+      categories = res.categories;
+      $("cat-input").value = categories.join("，");
+      toast("分类已保存");
+      render();
+    } catch (e) { toast("分类没保存：" + e.message); }
+  });
+
   // ---- wiring ----
   $("save-new").addEventListener("click", saveNew);
   $("rec-new").addEventListener("click", () => (rec && rec.target === "new") ? stopRec() : startRec("new"));
   $("pick-new").addEventListener("click", () => { $("file-new").value = ""; $("file-new").click(); });
   try { $("author").value = localStorage.getItem("author") || ""; } catch (_) {}
-  $("author").addEventListener("change", () => { try { localStorage.setItem("author", $("author").value.trim()); } catch (_) {} });
+  $("author").addEventListener("change", () => setPref("author", $("author").value.trim()));
+  $("author").addEventListener("input", () => $("author").classList.remove("invalid"));
+  $("filter-author").addEventListener("change", () => { filterAuthor = $("filter-author").value; setPref("filter-author", filterAuthor); render(); });
   async function acceptNew(f) {
     if (!f) return;
     try { pendingNew = await fromFile(f); newBase = null; dropUrl("new"); render(); toast("已附上：" + f.name); }
