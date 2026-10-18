@@ -79,7 +79,7 @@ jobs:
               note("error", "语音识别", f"语音识别出错（HTTP {status}）：{body[:200].decode('utf-8', 'replace')}")
 
           # The Worker's settings: only each binding's name and type are read, never a value.
-          token, account = os.environ.get("CF_TOKEN"), os.environ.get("CF_ACCOUNT")
+          token, account = (os.environ.get("CF_TOKEN") or "").strip(), (os.environ.get("CF_ACCOUNT") or "").strip()
           if token and account:
               req = urllib.request.Request(
                   f"https://api.cloudflare.com/client/v4/accounts/{account}/workers/scripts/wenan-luyinben/settings",
