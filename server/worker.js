@@ -14,7 +14,7 @@ const BRANCH = "main";
 const MAX_AUDIO_BYTES = 15 * 1024 * 1024;
 const MAX_TEXT = 5000;
 const MAX_AUTHOR = 40;
-const DEFAULT_CATEGORIES = ["文案", "工作", "生活复盘", "读书笔记", "其他"];
+const DEFAULT_CATEGORIES = ["文案", "工作", "工作交接", "生活复盘", "读书笔记", "其他"];
 const MAX_CATEGORIES = 20;
 const MAX_CATEGORY = 12;
 const AUDIO_TYPES = {
@@ -252,6 +252,7 @@ async function createLine(env, input, admin) {
   const author = cleanText(input.author, MAX_AUTHOR, "名字");
   if (!author && !admin) throw new HttpError(400, "请先填上你的名字。");
   const category = cleanText(input.category, MAX_CATEGORY, "分类") || DEFAULT_CATEGORIES[0];
+  const to = cleanText(input.to, MAX_AUTHOR, "交给谁");
   // Only the owner may carry over ids, numbers and dates, when importing a backup.
   const id = admin && typeof input.id === "string" && /^[a-z0-9]{6,40}$/.test(input.id) ? input.id : randomId();
   const existing = await listLines(env);
@@ -262,6 +263,7 @@ async function createLine(env, input, admin) {
   const createdAt = admin && Number.isFinite(input.createdAt) ? input.createdAt : Date.now();
   const voice = input.voice ? await storeAudio(env, id, input.voice, no) : null;
   const line = { id, no, text, author, category, createdAt, voice };
+  if (to) line.to = to;
   await putFile(env, "lines/" + id + ".json", b64FromUtf8(JSON.stringify(line, null, 2) + "\n"),
     "新增第 " + pad(no) + " 条" + (author ? "（" + author + "）" : ""));
   return line;
@@ -276,6 +278,7 @@ async function updateLine(env, id, input) {
     line.text = cleanText(input.text, MAX_TEXT, "文案");
     if (!line.text) throw new HttpError(400, "文案不能是空的。");
   }
+  if (typeof input.to === "string") { const to = cleanText(input.to, MAX_AUTHOR, "交给谁"); if (to) line.to = to; else delete line.to; }
   if (typeof input.category === "string") line.category = cleanText(input.category, MAX_CATEGORY, "分类") || DEFAULT_CATEGORIES[0];
   if ("voice" in input) line.voice = input.voice ? await storeAudio(env, id, input.voice, line.no) : null;
   if (typeof input.voiceText === "string" && line.voice) line.voice.text = cleanText(input.voiceText, MAX_TEXT, "录音文字");
@@ -326,12 +329,14 @@ const AI_KINDS = {
   summary: "用两三句话概括下面这段内容的核心意思。只输出概括本身，用简体中文。",
   minutes: "把下面这段录音内容整理成会议纪要，用简体中文。分“要点”“决定”“待办”三部分，每部分用短横线列表；待办尽量写清负责人和时间，原文没有的就不写，不要编造。只输出纪要本身。",
   prompt: "下面是一段口述的想法。把它整理成一份可以直接交给 AI 使用的提示词，用简体中文，包含：角色、背景、任务、具体要求、输出格式。保留原意，补全必要的约束，不要编造事实。只输出提示词本身。",
+  handover: "下面是一段工作交接的口述内容。整理成交接清单，用简体中文，分“交接事项”“当前进度”“注意事项”“相关人和资料”“截止时间”几部分，每部分用短横线列表；原文没有提到的部分写“未提及”，不要编造。只输出清单本身。",
   copy: "下面是一段文案或想法。保留原意，改写出 3 个不同风格的短文案（适合发朋友圈或做视频口播），每个不超过 60 字，用“1.”“2.”“3.”编号。只输出这 3 条。",
 };
 const MAX_AI_SOURCE = 8000;
 
 function sourceText(line) {
   const parts = [line.text || ""];
+  if (line.author || line.to) parts.unshift("（" + (line.author ? line.author + "说" : "") + (line.to ? "，交给" + line.to : "") + "）");
   const heard = line.voice && line.voice.text;
   if (heard && heard.trim() !== (line.text || "").trim()) parts.push("录音原话：" + heard);
   return parts.join("\n\n").slice(0, MAX_AI_SOURCE);
@@ -398,7 +403,7 @@ async function aiForLine(env, id, input, admin) {
       label = "配图";
     } else {
       line.ai[kind] = { text: await writeAi(env, kind, sourceText(line)), at: Date.now() };
-      label = { summary: "总结", minutes: "会议纪要", prompt: "提示词", copy: "改写文案" }[kind];
+      label = { summary: "总结", minutes: "会议纪要", prompt: "提示词", copy: "改写文案", handover: "交接清单" }[kind];
     }
   } catch (e) {
     if (e instanceof HttpError) throw e;

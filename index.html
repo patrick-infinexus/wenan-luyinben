@@ -24,6 +24,13 @@
   --zhu: #b8432f;          /* 朱砂: the seal, recording */
   --zhu-wash: #f3e1dc;
   --dai-wash: #e2e8f1;
+  /* one hue per category, in list order */
+  --k1: #b8432f; --k1w: #f4e3de;
+  --k2: #2f4a73; --k2w: #e2e8f1;
+  --k3: #2b6a57; --k3w: #dcebe4;
+  --k4: #86580f; --k4w: #f2e7d3;
+  --k5: #66468a; --k5w: #ebe3f2;
+  --k6: #4f5964; --k6w: #e5e8e6;
   --font-quote: "Noto Serif SC", "Songti SC", "STSong", serif;
   --font-ui: "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   --font-num: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
@@ -33,6 +40,8 @@
   :root {
     --paper: #15191e; --sheet: #1c2128; --ink: #e6e8e4; --ink-soft: #9aa3ac; --rule: #2d343c;
     --dai: #8eaad6; --zhu: #e07a64; --zhu-wash: #3a2622; --dai-wash: #222c3b; color-scheme: dark;
+    --k1: #e8907c; --k1w: #3a2621; --k2: #93afd9; --k2w: #222c3b; --k3: #7cc4ab; --k3w: #1c3029;
+    --k4: #d9b26d; --k4w: #352b1a; --k5: #bba0dc; --k5w: #2e2638; --k6: #a9b2bb; --k6w: #262b30;
   }
 }
 * { box-sizing: border-box; }
@@ -201,7 +210,27 @@ textarea[readonly] { color: var(--dai); }
 .who { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink-soft); }
 .who select, .edit-cat { font-family: var(--font-ui); font-size: 13px; color: var(--ink); background: var(--sheet); border: 1px solid var(--rule); border-radius: 6px; padding: 4px 6px; max-width: 100%; }
 .meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.tag { font-size: 12px; line-height: 1.6; padding: 0 8px; border-radius: 999px; background: var(--dai-wash); color: var(--dai); }
+.tag { font-size: 12px; line-height: 1.7; padding: 0 9px; border-radius: 999px; background: var(--tag-w, var(--dai-wash)); color: var(--tag, var(--dai)); font-weight: 500; }
+.chip.cat[aria-pressed="true"], .chip.cat[aria-checked="true"] { background: var(--tag); border-color: var(--tag); color: var(--sheet); }
+.chip.cat:hover { border-color: var(--tag); color: var(--tag); }
+.chip.cat[aria-pressed="true"]:hover, .chip.cat[aria-checked="true"]:hover { color: var(--sheet); }
+.entry .seal { border-color: var(--tag, var(--zhu)); color: var(--tag, var(--zhu)); }
+.meta .to { color: var(--ink); }
+.day { font-size: 12px; letter-spacing: 0.14em; color: var(--ink-soft); padding-block: 18px 2px; display: flex; align-items: center; gap: 10px; }
+.day::after { content: ""; flex: 1; height: 1px; background: var(--rule); }
+.day + .entry { border-top: none; }
+.search { width: 100%; }
+.ai { display: flex; flex-direction: column; gap: 10px; }
+.ai-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-soft); }
+.ai-tools button { font-size: 12px; padding: 3px 10px; border-style: dashed; color: var(--dai); }
+.ai-block { border-left: 2px solid var(--tag, var(--dai)); background: var(--sheet); padding: 10px 12px; border-radius: 0 6px 6px 0; display: flex; flex-direction: column; gap: 6px; }
+.ai-block h3 { margin: 0; font-size: 12px; letter-spacing: 0.12em; color: var(--ink-soft); font-weight: 500; display: flex; align-items: center; gap: 8px; }
+.ai-block h3 .sp { flex: 1; }
+.ai-block h3 button { font-size: 11px; padding: 2px 8px; letter-spacing: 0; }
+.ai-block .t { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; line-height: 1.75; }
+.ai-block img { width: 100%; max-width: 420px; aspect-ratio: 1; object-fit: cover; border-radius: 6px; background: var(--rule); }
+.today { font-family: var(--font-num); font-size: 12px; color: var(--ink-soft); margin-left: 8px; letter-spacing: 0.04em; }
+.export-scope { font-size: 13px; color: var(--ink); }
 textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6px; padding: 8px 10px; }
 
 .backup { display: flex; flex-direction: column; gap: 10px; font-size: 13px; color: var(--ink-soft); }
@@ -230,9 +259,10 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
   </header>
 
   <section class="compose" id="compose" aria-label="新收一条">
-    <label class="lbl" for="new-text">新收一条</label>
+    <label class="lbl" for="new-text">新收一条<span class="today" id="today"></span></label>
     <input type="text" class="field" id="author" maxlength="40" placeholder="你的名字（必填，会显示在这条下面）" autocomplete="nickname" aria-label="你的名字" required>
     <div class="cats" id="new-cats" role="radiogroup" aria-label="分类"></div>
+    <input type="text" class="field" id="to" maxlength="40" placeholder="交给谁（选填）" aria-label="交给谁" hidden>
     <textarea id="new-text" placeholder="把一句话写在这里"></textarea>
     <div class="row" id="new-voice-row"></div>
     <div class="row">
@@ -251,6 +281,7 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
   </section>
 
   <nav class="filters" aria-label="筛选">
+    <input type="search" class="field search" id="q" placeholder="搜索文字、录音原话和 AI 整理的内容" aria-label="搜索">
     <div class="cats" id="filter-cats"></div>
     <label class="who" for="filter-author" id="filter-author-wrap" hidden>谁录的 <select id="filter-author"></select></label>
   </nav>
@@ -259,9 +290,12 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
   <div class="state" id="state" hidden></div>
 
   <section class="backup" aria-label="备份和管理">
-    <div>这个本子存在云端，拿到链接的人都能看到、播放和添加。“导出备份”会把所有文案和录音打包成一个文件下载下来。</div>
+    <div>这个本子存在云端，拿到链接的人都能看到、播放和添加。导出只包含上面筛选出来的内容，想导出全部就先点“全部”。</div>
+    <div class="export-scope" id="export-scope"></div>
     <div class="row">
-      <button type="button" id="export">导出备份</button>
+      <button type="button" id="export-md">导出文字稿</button>
+      <button type="button" id="export-zip">导出录音包</button>
+      <button type="button" id="export">完整备份</button>
       <button type="button" id="import" hidden>导入备份</button>
       <button type="button" id="admin-toggle">管理</button>
     </div>
@@ -319,7 +353,9 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
   let editing = null;              // id of the line being edited
   let editDraft = "";
   let editCat = "";
-  const DEFAULT_CATS = ["文案", "工作", "生活复盘", "读书笔记", "其他"];
+  let editTo = "";
+  let query = "";
+  const DEFAULT_CATS = ["文案", "工作", "工作交接", "生活复盘", "读书笔记", "其他"];
   let categories = DEFAULT_CATS;
   const pref = (k) => { try { return localStorage.getItem(k) || ""; } catch (_) { return ""; } };
   const setPref = (k, v) => { try { localStorage.setItem(k, v); } catch (_) {} };
@@ -328,6 +364,43 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
   let newCat = pref("new-cat");
   // Lines saved before categories existed were all copywriting.
   const catOf = (e) => e.category || categories[0] || DEFAULT_CATS[0];
+  const isHandover = (c) => /交接/.test(c || "");
+  // Each category keeps its hue by its place in the list.
+  function tint(el, c) {
+    let i = categories.indexOf(c);
+    if (i < 0) i = categories.length + [...c].reduce((a, ch) => a + ch.charCodeAt(0), 0);
+    el.style.setProperty("--tag", "var(--k" + (i % 6 + 1) + ")");
+    el.style.setProperty("--tag-w", "var(--k" + (i % 6 + 1) + "w)");
+    return el;
+  }
+  const WEEK = "日一二三四五六";
+  const dayOf = (ms) => { const d = new Date(ms); return d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate(); };
+  const fmtDay = (ms) => { const d = new Date(ms); return (d.getMonth() + 1) + "月" + d.getDate() + "日 周" + WEEK[d.getDay()]; };
+  const fmtFull = (ms) => new Date(ms).getFullYear() + "年" + fmtDay(ms);
+  function dayLabel(ms) {
+    const now = new Date();
+    const base = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const d = new Date(ms);
+    const diff = Math.round((base - new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()) / 86400000);
+    const label = d.getFullYear() === now.getFullYear() ? fmtDay(ms) : fmtFull(ms);
+    return diff === 0 ? "今天 · " + label : diff === 1 ? "昨天 · " + label : label;
+  }
+  // The first line of anything copied or exported: what, when, who, to whom.
+  const headerOf = (e) => "【" + catOf(e) + "】" + fmtFull(e.createdAt || Date.now()) + (e.author ? " · " + e.author : "") + (e.to ? " → 交给 " + e.to : "");
+  const AI_LABELS = { summary: "总结", minutes: "会议纪要", handover: "交接清单", prompt: "写成提示词", copy: "改写文案", image: "配图" };
+  const AI_ORDER = ["summary", "minutes", "handover", "prompt", "copy", "image"];
+  function aiKindsFor(e) {
+    const c = catOf(e);
+    const first = isHandover(c) ? ["handover"] : /工作|会议/.test(c) ? ["minutes"] : /文案/.test(c) ? ["copy", "image"] : /提示/.test(c) ? ["prompt"] : [];
+    return [...first, ...AI_ORDER.filter((k) => !first.includes(k) && (k !== "handover" || isHandover(c)))];
+  }
+  const imageUrl = (img) => API + "/api/image/" + img.file;
+  function matches(e, q) {
+    if (!q) return true;
+    const ai = e.ai ? Object.values(e.ai).map((v) => (v && v.text) || "").join(" ") : "";
+    return [e.text, e.voice && e.voice.text, e.author, e.to, catOf(e), ai].join(" ").toLowerCase().includes(q.toLowerCase());
+  }
+  const visible = () => entries.filter((e) => (!filterCat || catOf(e) === filterCat) && (!filterAuthor || (e.author || "") === filterAuthor) && matches(e, query));
   let pendingNew = null;           // {blob, type, dur}
   let pickTarget = null;
   let confirming = null;
@@ -921,11 +994,14 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
     const state = $("state");
     list.innerHTML = "";
     if (!ready) return;
-    const shown = entries.filter((e) => (!filterCat || catOf(e) === filterCat) && (!filterAuthor || (e.author || "") === filterAuthor));
+    const shown = visible();
+    const scope = [filterCat || "全部", filterAuthor, query && "搜索“" + query + "”"].filter(Boolean).join(" · ");
+    $("export-scope").textContent = "导出范围：" + scope + "，共 " + shown.length + " 条";
     if (entries.length && !shown.length) {
       state.hidden = false;
       state.innerHTML = "";
-      state.textContent = filterAuthor && filterCat ? filterAuthor + "在“" + filterCat + "”里还没录过内容。"
+      state.textContent = query ? "没有找到包含“" + query + "”的内容。"
+        : filterAuthor && filterCat ? filterAuthor + "在“" + filterCat + "”里还没录过内容。"
         : filterAuthor ? filterAuthor + "还没录过内容。" : "“" + filterCat + "”里还没有内容。";
       return;
     }
@@ -943,8 +1019,19 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
       return;
     }
     state.hidden = true;
-    const sorted = shown.slice().sort((a, b) => (b.no || 0) - (a.no || 0));
-    for (const e of sorted) list.appendChild(renderEntry(e));
+    const sorted = shown.slice().sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0) || (b.no || 0) - (a.no || 0));
+    let lastDay = null;
+    for (const e of sorted) {
+      const d = dayOf(e.createdAt || 0);
+      if (d !== lastDay) {
+        const h = document.createElement("div");
+        h.className = "day";
+        h.textContent = dayLabel(e.createdAt || 0);
+        list.appendChild(h);
+        lastDay = d;
+      }
+      list.appendChild(renderEntry(e));
+    }
     updateRecClock();
   }
 
@@ -968,7 +1055,10 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
     if (!categories.includes(newCat)) newCat = categories[0];
     const nc = $("new-cats");
     nc.innerHTML = "";
-    for (const c of categories) nc.appendChild(chip(c, c === newCat, () => { newCat = c; setPref("new-cat", c); render(); }, undefined, "radio"));
+    for (const c of categories) nc.appendChild(tint(chip(c, c === newCat, () => { newCat = c; setPref("new-cat", c); render(); }, undefined, "radio"), c));
+    for (const b of nc.children) b.classList.add("cat");
+    $("to").hidden = !isHandover(newCat);
+    $("today").textContent = "· " + fmtFull(Date.now());
 
     // Filter by every category in use, including ones the owner has since removed.
     const all = categories.slice();
@@ -978,7 +1068,7 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
     fc.innerHTML = "";
     const pick = (c) => { filterCat = c; setPref("filter-cat", c); render(); };
     fc.appendChild(chip("全部", !filterCat, () => pick(""), entries.length));
-    for (const c of all) fc.appendChild(chip(c, filterCat === c, () => pick(c), entries.filter((e) => catOf(e) === c).length));
+    for (const c of all) { const b = tint(chip(c, filterCat === c, () => pick(c), entries.filter((e) => catOf(e) === c).length), c); b.classList.add("cat"); fc.appendChild(b); }
     fc.hidden = !entries.length;
 
     const authors = [...new Set(entries.map((e) => e.author || "").filter(Boolean))].sort((a, b) => a.localeCompare(b, "zh"));
@@ -996,7 +1086,7 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
   }
 
   function renderEntry(e) {
-    const el = document.createElement("article");
+    const el = tint(document.createElement("article"), catOf(e));
     el.className = "entry";
     el.dataset.id = e.id;
 
@@ -1024,6 +1114,13 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
       cs.value = editCat;
       cs.addEventListener("change", () => { editCat = cs.value; });
       r.appendChild(cs);
+      const ti = document.createElement("input");
+      ti.type = "text"; ti.className = "field"; ti.id = "edit-to-" + e.id; ti.placeholder = "交给谁"; ti.maxLength = 40;
+      ti.setAttribute("aria-label", "交给谁");
+      ti.value = editTo;
+      ti.style.width = "8em";
+      ti.addEventListener("input", () => { editTo = ti.value; });
+      r.appendChild(ti);
       const save = document.createElement("button");
       save.type = "button"; save.className = "primary"; save.textContent = "保存修改";
       save.addEventListener("click", () => saveEdit(e));
@@ -1044,8 +1141,14 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
     tag.className = "tag";
     tag.textContent = catOf(e);
     const when = document.createElement("span");
-    when.textContent = fmtDate(e.createdAt) + (e.author ? " · " + e.author : "");
+    when.textContent = fmtDay(e.createdAt || 0) + (e.author ? " · " + e.author : "");
     meta.append(tag, when);
+    if (e.to) {
+      const to = document.createElement("span");
+      to.className = "to";
+      to.textContent = "→ 交给 " + e.to;
+      meta.appendChild(to);
+    }
     body.appendChild(meta);
 
     const recording = rec && rec.target === e.id;
@@ -1072,10 +1175,10 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
       b.addEventListener("click", fn);
       acts.appendChild(b);
     };
-    add("复制", () => copyText(e.text || ""));
+    add("复制", () => copyText(headerOf(e) + "\n" + (e.text || "")));
     if (e.voice) add("下载录音", () => downloadVoice(e));
     if (isAdmin) {
-      if (editing !== e.id) add("编辑", () => { editing = e.id; editDraft = e.text || ""; editCat = catOf(e); render(); const t = $("edit-" + e.id); if (t) t.focus(); });
+      if (editing !== e.id) add("编辑", () => { editing = e.id; editDraft = e.text || ""; editCat = catOf(e); editTo = e.to || ""; render(); const t = $("edit-" + e.id); if (t) t.focus(); });
       const recB = recButton(e.id);
       if (!recording) recB.querySelector(".label").textContent = e.voice ? "重录" : "录音";
       if (busyText[e.id]) recB.disabled = true;
@@ -1086,6 +1189,7 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
       add("删除这条", () => { confirming = { id: e.id, kind: "entry" }; render(); });
     }
     body.appendChild(acts);
+    body.appendChild(renderAi(e));
 
     if (isAdmin && confirming && confirming.id === e.id) {
       const c = document.createElement("div");
@@ -1108,9 +1212,86 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
     return el;
   }
 
+  // AI results under a line, and buttons for the ones not made yet.
+  function renderAi(e) {
+    const box = document.createElement("div");
+    box.className = "ai";
+    const ai = e.ai || {};
+    for (const k of AI_ORDER) {
+      const r = ai[k];
+      if (!r) continue;
+      const b = document.createElement("section");
+      b.className = "ai-block";
+      const h = document.createElement("h3");
+      h.innerHTML = '<span class="k"></span><span class="sp"></span>';
+      h.querySelector(".k").textContent = AI_LABELS[k];
+      const btn = (label, fn) => { const x = document.createElement("button"); x.type = "button"; x.textContent = label; x.disabled = !!busyText[e.id]; x.addEventListener("click", fn); h.appendChild(x); };
+      if (k === "image") {
+        const img = document.createElement("img");
+        img.crossOrigin = "anonymous";
+        img.loading = "lazy";
+        img.alt = "根据第 " + pad(e.no || 0) + " 条生成的配图";
+        img.src = imageUrl(r);
+        btn("下载", () => downloadImage(e));
+        if (isAdmin) btn("重新生成", () => runAi(e, k));
+        b.append(h, img);
+      } else {
+        const t = document.createElement("p");
+        t.className = "t";
+        t.textContent = r.text;
+        btn("复制", () => copyText(headerOf(e) + " · " + AI_LABELS[k] + "\n" + r.text));
+        if (isAdmin) btn("重新生成", () => runAi(e, k));
+        b.append(h, t);
+      }
+      box.appendChild(b);
+    }
+    const todo = aiKindsFor(e).filter((k) => !ai[k]);
+    if (todo.length && ((e.text || "").trim() || (e.voice && e.voice.text))) {
+      const tools = document.createElement("div");
+      tools.className = "ai-tools";
+      tools.appendChild(document.createTextNode("AI 整理"));
+      for (const k of todo) {
+        const x = document.createElement("button");
+        x.type = "button";
+        x.textContent = AI_LABELS[k];
+        x.disabled = !!busyText[e.id];
+        x.addEventListener("click", () => runAi(e, k));
+        tools.appendChild(x);
+      }
+      box.appendChild(tools);
+    }
+    return box;
+  }
+  async function runAi(e, kind) {
+    if (busyText[e.id]) return;
+    busyText[e.id] = kind === "image" ? "正在画配图…" : "AI 正在写" + AI_LABELS[kind] + "…";
+    render();
+    try {
+      await api("/api/lines/" + e.id + "/ai", { method: "POST", body: { kind } });
+      toast(AI_LABELS[kind] + "好了");
+    } catch (err) { toast("AI 没写成：" + err.message); }
+    delete busyText[e.id];
+    await reload();
+  }
+
+  // Clipboard API first; browsers without it (in-app browsers, older phones) get the
+  // selection-and-copy route, and if both fail the text is left selected for a manual copy.
   async function copyText(text) {
-    try { await navigator.clipboard.writeText(text); toast("已复制"); }
-    catch (_) { toast("复制不了，请长按文字手动复制"); }
+    try {
+      if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(text); toast("已复制"); return; }
+    } catch (_) {}
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.cssText = "position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    let ok = false;
+    try { ok = document.execCommand("copy"); } catch (_) {}
+    ta.remove();
+    toast(ok ? "已复制" : "这个浏览器不让网页复制，请长按文字手动复制");
   }
   function downloadBlob(blob, name) {
     const a = document.createElement("a");
@@ -1119,6 +1300,13 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
     document.body.appendChild(a);
     a.click();
     setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  }
+  async function downloadImage(e) {
+    try {
+      const res = await fetch(imageUrl(e.ai.image));
+      if (!res.ok) throw new Error("配图取不下来（" + res.status + "）");
+      downloadBlob(await res.blob(), pad(e.no) + "-配图.jpg");
+    } catch (err) { toast(err.message); }
   }
   async function downloadVoice(e) {
     try { downloadBlob(await voiceBlob(e.voice), pad(e.no) + "." + extFor(e.voice.type)); }
@@ -1157,9 +1345,10 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
     btn.textContent = pendingNew ? "正在上传录音…" : "正在保存…";
     try {
       setPref("author", author);
-      const body = { text, author, category: newCat || categories[0], voice: pendingNew ? await voicePayload(pendingNew) : null };
+      const body = { text, author, category: newCat || categories[0], to: isHandover(newCat) ? $("to").value.trim() : "", voice: pendingNew ? await voicePayload(pendingNew) : null };
       const { line } = await api("/api/lines", { method: "POST", body, admin: false });
       $("new-text").value = "";
+      $("to").value = "";
       dropUrl("new");
       pendingNew = null;
       setStatus(null);
@@ -1190,7 +1379,7 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
     busyText[e.id] = "正在保存修改…";
     render();
     try {
-      await api("/api/lines/" + e.id, { method: "PATCH", body: { text, category: editCat } });
+      await api("/api/lines/" + e.id, { method: "PATCH", body: { text, category: editCat, to: editTo.trim() } });
       editing = null;
       toast("第 " + pad(e.no || 0) + " 条已修改");
     } catch (err) { toast("没改成：" + err.message); }
@@ -1224,23 +1413,106 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
     btn.disabled = true;
     try {
       await reload();
+      const list = visible();
       const out = [];
       let i = 0;
-      for (const e of entries) {
-        btn.textContent = "正在打包 " + (++i) + "/" + entries.length;
-        const row = { id: e.id, no: e.no, text: e.text, author: e.author || "", category: catOf(e), createdAt: e.createdAt, voice: null };
+      for (const e of list) {
+        btn.textContent = "正在打包 " + (++i) + "/" + list.length;
+        const row = { id: e.id, no: e.no, text: e.text, author: e.author || "", category: catOf(e), to: e.to || "", createdAt: e.createdAt, voice: null };
+        if (e.ai) row.ai = Object.fromEntries(Object.entries(e.ai).filter(([k, v]) => v && v.text).map(([k, v]) => [k, { text: v.text, at: v.at }]));
         if (e.voice) row.voice = { type: e.voice.type, dur: e.voice.dur, text: e.voice.text || "", data: await blobToB64(await voiceBlob(e.voice)) };
         out.push(row);
       }
       const json = JSON.stringify({ app: "wenan-luyinben", version: 1, exportedAt: Date.now(), lines: out });
       const d = new Date();
-      downloadBlob(new Blob([json], { type: "application/json" }), "文案录音本备份-" + d.getFullYear() + String(d.getMonth() + 1).padStart(2, "0") + String(d.getDate()).padStart(2, "0") + ".json");
+      downloadBlob(new Blob([json], { type: "application/json" }), "文案录音本备份-" + (filterCat ? filterCat + "-" : "") + d.getFullYear() + String(d.getMonth() + 1).padStart(2, "0") + String(d.getDate()).padStart(2, "0") + ".json");
     } catch (e) {
       toast("备份没做成：" + e.message);
     }
     btn.disabled = false;
-    btn.textContent = "导出备份";
+    btn.textContent = "完整备份";
   }
+  const stamp = () => { const d = new Date(); return d.getFullYear() + String(d.getMonth() + 1).padStart(2, "0") + String(d.getDate()).padStart(2, "0"); };
+  const safeName = (t) => (t || "").replace(/[\\/:*?"<>|\s]+/g, "").slice(0, 14);
+  const fileBase = (e) => pad(e.no || 0) + "-" + safeName(catOf(e)) + "-" + (safeName(e.text) || "录音");
+  function markdown(list, withFiles) {
+    const title = "# 文案录音本" + (filterCat ? " · " + filterCat : "") + (filterAuthor ? " · " + filterAuthor : "");
+    const parts = [title + "\n\n导出于 " + fmtFull(Date.now()) + "，共 " + list.length + " 条。"];
+    for (const e of list) {
+      const p = ["## " + pad(e.no || 0) + " " + headerOf(e), e.text || ""];
+      if (e.voice && e.voice.text && e.voice.text.trim() !== (e.text || "").trim()) p.push("> 录音原话：" + e.voice.text.replace(/\n/g, "\n> "));
+      if (withFiles && e.voice) p.push("录音：`" + fileBase(e) + "." + extFor(e.voice.type) + "`");
+      for (const k of AI_ORDER) {
+        const r = e.ai && e.ai[k];
+        if (!r) continue;
+        if (k === "image") p.push(withFiles ? "![配图](" + fileBase(e) + "-配图.jpg)" : "配图：" + imageUrl(r));
+        else p.push("**" + AI_LABELS[k] + "**\n\n" + r.text);
+      }
+      parts.push(p.join("\n\n"));
+    }
+    return parts.join("\n\n---\n\n") + "\n";
+  }
+  function exportMd() {
+    const list = visible().sort((a, b) => (a.no || 0) - (b.no || 0));
+    if (!list.length) { toast("没有可以导出的内容"); return; }
+    downloadBlob(new Blob([markdown(list, false)], { type: "text/markdown" }), "文案录音本" + (filterCat ? "-" + filterCat : "") + "-" + stamp() + ".md");
+  }
+  // A plain "stored" ZIP: recordings are already compressed, so nothing is lost by not deflating.
+  const CRC = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+  function crc32(b) { let c = 0xffffffff; for (let i = 0; i < b.length; i++) c = CRC[(c ^ b[i]) & 255] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; }
+  function zip(files) {
+    const enc = new TextEncoder();
+    const chunks = [], central = [];
+    let offset = 0;
+    const now = new Date();
+    const dosTime = (now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1);
+    const dosDate = ((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
+    for (const f of files) {
+      const name = enc.encode(f.name), data = f.data, crc = crc32(data);
+      const h = new DataView(new ArrayBuffer(30));
+      h.setUint32(0, 0x04034b50, true); h.setUint16(4, 20, true); h.setUint16(6, 0x0800, true); h.setUint16(8, 0, true);
+      h.setUint16(10, dosTime, true); h.setUint16(12, dosDate, true); h.setUint32(14, crc, true);
+      h.setUint32(18, data.length, true); h.setUint32(22, data.length, true); h.setUint16(26, name.length, true); h.setUint16(28, 0, true);
+      chunks.push(new Uint8Array(h.buffer), name, data);
+      const c = new DataView(new ArrayBuffer(46));
+      c.setUint32(0, 0x02014b50, true); c.setUint16(4, 20, true); c.setUint16(6, 20, true); c.setUint16(8, 0x0800, true); c.setUint16(10, 0, true);
+      c.setUint16(12, dosTime, true); c.setUint16(14, dosDate, true); c.setUint32(16, crc, true);
+      c.setUint32(20, data.length, true); c.setUint32(24, data.length, true); c.setUint16(28, name.length, true);
+      c.setUint32(42, offset, true);
+      central.push(new Uint8Array(c.buffer), name);
+      offset += 30 + name.length + data.length;
+    }
+    const size = central.reduce((n, b) => n + b.length, 0);
+    const end = new DataView(new ArrayBuffer(22));
+    end.setUint32(0, 0x06054b50, true); end.setUint16(8, files.length, true); end.setUint16(10, files.length, true);
+    end.setUint32(12, size, true); end.setUint32(16, offset, true);
+    return new Blob([...chunks, ...central, new Uint8Array(end.buffer)], { type: "application/zip" });
+  }
+  async function exportZip() {
+    const list = visible().sort((a, b) => (a.no || 0) - (b.no || 0));
+    if (!list.length) { toast("没有可以导出的内容"); return; }
+    const btn = $("export-zip");
+    btn.disabled = true;
+    try {
+      const files = [];
+      let i = 0;
+      for (const e of list) {
+        btn.textContent = "正在打包 " + (++i) + "/" + list.length;
+        if (e.voice) files.push({ name: fileBase(e) + "." + extFor(e.voice.type), data: new Uint8Array(await (await voiceBlob(e.voice)).arrayBuffer()) });
+        if (e.ai && e.ai.image) {
+          const res = await fetch(imageUrl(e.ai.image));
+          if (res.ok) files.push({ name: fileBase(e) + "-配图.jpg", data: new Uint8Array(await res.arrayBuffer()) });
+        }
+      }
+      files.unshift({ name: "文字稿.md", data: new TextEncoder().encode(markdown(list, true)) });
+      downloadBlob(zip(files), "文案录音本" + (filterCat ? "-" + filterCat : "") + "-" + stamp() + ".zip");
+    } catch (err) {
+      toast("录音包没做成：" + err.message);
+    }
+    btn.disabled = false;
+    btn.textContent = "导出录音包";
+  }
+
   async function importFile(file) {
     let data;
     try { data = JSON.parse(await file.text()); } catch (_) { toast("这个文件不是文案录音本的备份。"); return; }
@@ -1255,7 +1527,7 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
       btn.textContent = "正在导入 " + (added + 1) + "/" + todo.length;
       try {
         await api("/api/lines", { method: "POST", body: {
-          id: r.id, no: r.no, text: r.text, author: r.author || "", category: r.category || "", createdAt: r.createdAt,
+          id: r.id, no: r.no, text: r.text, author: r.author || "", category: r.category || "", to: r.to || "", createdAt: r.createdAt,
           voice: r.voice && r.voice.data ? { type: r.voice.type, dur: r.voice.dur, text: r.voice.text || "", data: r.voice.data } : null,
         } });
         added++;
@@ -1358,7 +1630,10 @@ textarea.edit { font-size: 18px; border: 1px solid var(--rule); border-radius: 6
     pickTarget = null;
     if (f && id) attachTo(id, f);
   });
-  $("export").addEventListener("click", () => entries.length ? exportAll() : toast("还没有可以导出的文案"));
+  $("export").addEventListener("click", () => visible().length ? exportAll() : toast("没有可以导出的内容"));
+  $("export-md").addEventListener("click", exportMd);
+  $("export-zip").addEventListener("click", exportZip);
+  $("q").addEventListener("input", () => { query = $("q").value.trim(); render(); });
   $("import").addEventListener("click", () => { $("file-import").value = ""; $("file-import").click(); });
   $("file-import").addEventListener("change", (ev) => { const f = ev.target.files && ev.target.files[0]; if (f) importFile(f); });
 
