@@ -34,7 +34,8 @@ jobs:
           LINE = "世界上有三种人，一种正在发光，一种正在燃烧，一种正在腐烂。"
           runs = []
           tasks = [{"kind": "summary", "text": MEMO}, {"kind": "minutes", "text": MEMO}, {"kind": "prompt", "text": IDEA},
-                   {"kind": "copy", "text": LINE}, {"kind": "image", "text": LINE}]
+                   {"kind": "copy", "text": LINE}, {"kind": "image", "text": LINE},
+                   {"kind": "handover", "text": "（鹏宇说，交给小李）官网下周三上线，测试交给小王，公告你来写，预算记得找财务确认，资料在共享盘的官网文件夹里。"}]
           req = urllib.request.Request(os.environ["API"] + "/api/probe", data=json.dumps({"runs": runs, "tasks": tasks}).encode(),
               headers={"Content-Type": "application/json", "X-Probe-Key": os.environ["KEY"], "User-Agent": "probe"})
           for attempt in range(4):
